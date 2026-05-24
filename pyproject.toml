@@ -62,6 +62,12 @@ disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Session-scoped loop so the global SQLAlchemy engine's async connection
+# pool stays bound to a single loop across DB-backed tests — fresh-loop-
+# per-test triggers "Event loop is closed" when the pool tries to
+# terminate connections owned by a finalized loop.
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra"
