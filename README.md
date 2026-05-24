@@ -40,7 +40,7 @@ docker compose up -d --build
 cd ../wispr-web && pnpm dev
 ```
 
-Then open <http://localhost:3000>. The `/styleguide` page has a "live env" smoke badge that pings `/health` from the running api, so you can see at a glance whether the wire is up.
+Then open <http://localhost:3000>. Open the browser devtools network panel to confirm fetches against the api succeed.
 
 ## Quickstart — native uv (DB + Redis still in compose)
 
@@ -64,6 +64,46 @@ uv run ruff format .
 uv run mypy app/ alembic/ tests/
 ```
 
+## Production deploy
+
+Production runs on a shared VM behind a single Caddy reverse proxy that fronts every project on the box. The setup follows the conventions documented in `~/proxy/HOSTING.md` on the VM:
+
+- Each project lives in `~/<project>/` with its own docker-compose.
+- Public-facing services join the external `web` Docker network.
+- Private services (postgres, redis) stay on the project's default network — never exposed.
+- A `docker-compose.prod.yml` overlay layers production-only changes on top of the dev compose.
+
+Bring it up on the VM:
+
+```bash
+# Once, on first deploy
+cd ~ && git clone https://github.com/dog-broad/wispr-api.git
+cd ~/wispr-api
+cp .env.example .env
+# Generate a strong postgres password and rewrite the .env values:
+NEW_PW=$(openssl rand -hex 24)
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$NEW_PW/" .env
+sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql+asyncpg://wispr:$NEW_PW@localhost:5432/wispr|" .env
+sed -i 's|^CORS_ALLOWED_ORIGIN=.*|CORS_ALLOWED_ORIGIN=https://wispr.rushyendra.dev|' .env
+
+# Bring up the prod stack
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+# Run schema migrations (idempotent — safe to re-run on redeploy)
+docker compose exec api alembic upgrade head
+```
+
+Then add the Caddyfile entry for the api hostname:
+
+```caddyfile
+api.wispr.rushyendra.dev {
+    encode gzip
+    reverse_proxy wispr-api-api-1:8000
+}
+```
+
+…in `~/proxy/Caddyfile`, then `sudo docker restart proxy-caddy`. Let's Encrypt provisions the cert on the first request.
+
 ## Environment
 
 `.env.example` is the canonical contract. Copy it to `.env` for both quickstart paths above. Two routes for two contexts:
@@ -78,12 +118,19 @@ The split exists because `localhost` makes sense for a process running directly 
 
 ```
 app/
-├── main.py        FastAPI app factory + CORS wiring
-├── config.py      Settings (pydantic-settings, env-driven)
-├── db.py          SQLAlchemy 2.0 async base + engine
-└── routes/        One router per concern
-alembic/           Migrations (async template)
-tests/             Pytest mirror of app/
-Dockerfile         Dev image (python:3.12-slim + uv)
-docker-compose.yml api + postgres:16 + redis:7
+├── main.py            FastAPI app factory + CORS + security headers + lifespan
+├── config.py          Settings (pydantic-settings, env-driven)
+├── db.py              SQLAlchemy 2.0 async base + engine
+├── redis_client.py    Redis async client with lifespan-managed lifecycle
+├── lib/               clientip, ratelimit, ids
+├── jobs/              Background tasks (purge sweeper)
+├── middleware/        Security headers middleware
+├── models/            ORM models (snippets)
+├── routes/            One router per concern (health, snippets)
+└── schemas/           Pydantic request/response shapes
+alembic/               Async migrations
+tests/                 pytest mirror of app/
+Dockerfile             Multi-stage: dev (with --reload + bind-mount) and prod (baked source, no dev deps)
+docker-compose.yml     api + postgres:16 + redis:7 (dev defaults)
+docker-compose.prod.yml  Overlay: joins shared `web` network, strips host ports, restart: unless-stopped
 ```
