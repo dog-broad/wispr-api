@@ -1,0 +1,45 @@
+# Production overlay. Apply on top of docker-compose.yml on the VM:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# What this changes vs the dev compose:
+# - api joins the shared `web` Docker network so the host's Caddy can
+#   reverse_proxy to it by service name. db and redis stay on the
+#   default (project-private) network — only the api is reachable from
+#   outside the project's network namespace.
+# - All three services get `restart: unless-stopped` so the VM survives
+#   a reboot or a transient crash.
+# - Host port bindings are stripped on every service. Caddy publishes the
+#   only public ingress (443/80 on its own container); db / redis / api
+#   listen only on the Docker network. This matches the HOSTING.md
+#   convention and the postgres-ports leak warning from harmonia.
+# - api builds the `prod` Dockerfile stage (no --reload, no dev deps,
+#   source baked into the image).
+# - Source bind-mount is dropped — the image's own code is what runs.
+
+services:
+  api:
+    build:
+      context: .
+      target: prod
+    restart: unless-stopped
+    ports: []
+    volumes: []
+    networks:
+      - default
+      - web
+
+  db:
+    restart: unless-stopped
+    ports: []
+    networks:
+      - default
+
+  redis:
+    restart: unless-stopped
+    ports: []
+    networks:
+      - default
+
+networks:
+  web:
+    external: true
