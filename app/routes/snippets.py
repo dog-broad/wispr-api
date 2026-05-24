@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.lib.ids import new_snippet_id
+from app.lib.ratelimit import snippets_create_anon_limit, snippets_get_limit
 from app.models.snippets import ShareMode, Snippet
 from app.schemas.snippets import (
     CreateLinkSnippetRequest,
@@ -34,6 +35,7 @@ _ID_RETRIES = 5
     "",
     status_code=status.HTTP_201_CREATED,
     response_model=CreateSnippetResponse,
+    dependencies=[Depends(snippets_create_anon_limit)],
 )
 async def create_snippet(
     body: CreateLinkSnippetRequest,
@@ -90,6 +92,7 @@ async def create_snippet(
             "description": "Snippet existed but is expired, burned, or taken down",
         },
     },
+    dependencies=[Depends(snippets_get_limit)],
 )
 async def get_snippet(
     snippet_id: str,
