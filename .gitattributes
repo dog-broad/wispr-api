@@ -1,0 +1,23 @@
+* text=auto eol=lf
+
+# Explicit text
+*.py       text eol=lf
+*.pyi      text eol=lf
+*.toml     text eol=lf
+*.ini      text eol=lf
+*.cfg      text eol=lf
+*.md       text eol=lf
+*.json     text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.mako     text eol=lf
+*.env      text eol=lf
+*.gitignore text eol=lf
+Dockerfile text eol=lf
+
+# Binary
+*.png binary
+*.jpg binary
+*.pdf binary
+*.so binary
+*.pyc binary

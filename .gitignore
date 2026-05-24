@@ -1,0 +1,43 @@
+# Bytecode / packaging
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Tooling
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# DB volumes
+postgres-data/
+redis-data/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
