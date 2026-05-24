@@ -8,26 +8,28 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from redis.asyncio import Redis, from_url
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.lib.ratelimit import snippets_create_anon_limit, snippets_get_limit
 from app.main import app
 
-# Tests that touch the database expect a real postgres at TEST_DATABASE_URL
-# (or DATABASE_URL as a fallback) — typically the docker-compose service
-# brought up via `docker compose up -d db`. Pure-HTTP tests (e.g. /health)
-# use the lightweight `client` fixture and never need a database.
 _TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
     os.environ.get("DATABASE_URL", "postgresql+asyncpg://wispr:wispr@localhost:5432/wispr"),
+)
+_TEST_REDIS_URL = os.environ.get(
+    "TEST_REDIS_URL",
+    os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
 )
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    """ASGI client with no database wiring. Use this for endpoints that do
-    not call `Depends(get_session)`."""
+    """ASGI client with no database or redis wiring. Use this for endpoints
+    that do not call `Depends(get_session)` or rate-limit deps."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
@@ -47,20 +49,11 @@ def _run_alembic_upgrade() -> None:
 
 @pytest.fixture(scope="session")
 def _migrated_database() -> None:
-    """Ensure the test database is at head before the first DB-backed test
-    runs. Session-scoped so we pay the migration cost once."""
     _run_alembic_upgrade()
 
 
 @pytest.fixture
 async def db_session(_migrated_database: None) -> AsyncIterator[AsyncSession]:
-    """Per-test database session for direct assertions. Truncates the
-    snippets table after each test so cases don't see each other's rows.
-
-    NOTE: this is *not* the session the handlers receive — they go through
-    the real `get_session` dependency and get their own. Sharing one session
-    across concurrent requests would deadlock (sessions are not concurrent-
-    safe). Use this fixture for setup/teardown or direct row inspection."""
     engine = create_async_engine(_TEST_DATABASE_URL, pool_pre_ping=True)
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     try:
@@ -74,14 +67,55 @@ async def db_session(_migrated_database: None) -> AsyncIterator[AsyncSession]:
 
 
 @pytest.fixture
-async def db_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
-    """ASGI client backed by the same test database as `db_session`.
+async def redis_client() -> AsyncIterator[Redis]:
+    """Connected redis client backed by the docker-compose service. Flushes
+    the configured DB on entry so cases don't see each other's bucket state.
 
-    Depending on this fixture also depends on `db_session`, which means
-    the after-test snippets TRUNCATE runs whenever a test uses `db_client`.
-    Handlers create their own sessions via the real `get_session` dep —
-    no override — so concurrent requests get independent sessions."""
+    Most tests should depend on this transitively through `db_client`
+    (which mounts the client on `app.state.redis` and bypasses rate
+    limiting). Tests that exercise the limiter itself depend on this
+    directly and skip the override."""
+    client: Redis = from_url(_TEST_REDIS_URL, encoding="utf-8", decode_responses=False)
+    try:
+        await client.flushdb()
+        yield client
+    finally:
+        await client.aclose()
+
+
+async def _noop_rate_limit() -> None:
+    return None
+
+
+@pytest.fixture
+async def db_client(
+    db_session: AsyncSession, redis_client: Redis
+) -> AsyncIterator[AsyncClient]:
+    """ASGI client backed by the test database. Rate-limit dependencies are
+    overridden to no-ops so endpoint tests stay focused on their own
+    behaviour; tests that exercise the limiter use `rate_limit_client`."""
     _ = db_session  # establish the dependency chain
+    app.state.redis = redis_client
+    app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
+    app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+    finally:
+        app.dependency_overrides.pop(snippets_create_anon_limit, None)
+        app.dependency_overrides.pop(snippets_get_limit, None)
+
+
+@pytest.fixture
+async def rate_limit_client(
+    db_session: AsyncSession, redis_client: Redis
+) -> AsyncIterator[AsyncClient]:
+    """ASGI client with the real rate-limit dependencies attached so a test
+    can observe 429s. Tests that need a particular IP set the
+    ``CF-Connecting-IP`` header on each request."""
+    _ = db_session
+    app.state.redis = redis_client
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
