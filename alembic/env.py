@@ -7,14 +7,13 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from alembic import context
-from app.config import get_settings
-from app.db import Base
-
 # Import every ORM model so its mapper attaches to Base.metadata before
 # autogenerate inspects it. Adding a new model is one line in
 # app.models.__init__; this import does not need to change.
 import app.models  # noqa: F401
+from alembic import context
+from app.config import get_settings
+from app.db import Base
 
 config = context.config
 
