@@ -22,21 +22,30 @@ services:
       context: .
       target: prod
     restart: unless-stopped
-    ports: []
-    volumes: []
+    # !reset wipes the inherited list from docker-compose.yml; bare
+    # `ports: []` would only APPEND nothing, which leaves the dev
+    # 8000:8000 binding in place. Same applies to volumes — we drop
+    # the source bind-mount so the prod image's own code is what runs.
+    ports: !reset []
+    volumes: !reset []
     networks:
       - default
       - web
 
   db:
     restart: unless-stopped
-    ports: []
+    # Strip the dev 5432:5432 host binding — postgres listens only on
+    # the project's default Docker network in prod (harmonia's existing
+    # postgres holds the host's :5432, so binding here would conflict
+    # anyway).
+    ports: !reset []
     networks:
       - default
 
   redis:
     restart: unless-stopped
-    ports: []
+    # Same as db — keep redis off the host port plane.
+    ports: !reset []
     networks:
       - default
 
