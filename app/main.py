@@ -12,14 +12,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.db import async_session_maker
 from app.jobs.purge import run_purge_loop
+from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.redis_client import close_redis, open_redis
 from app.routes import health, snippets
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    app.state.redis = await open_redis()
     stop_event = asyncio.Event()
     purge_task = asyncio.create_task(
         run_purge_loop(
@@ -40,6 +43,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             purge_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await purge_task
+        await close_redis(app.state.redis)
 
 
 def create_app() -> FastAPI:
@@ -56,6 +60,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Middleware order: Starlette runs them last-added → first-executed,
+    # so security headers wrap CORS, ensuring our headers are present even
+    # on a CORS preflight reply.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.cors_allowed_origin],
@@ -64,6 +71,7 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type", "Authorization"],
         max_age=600,
     )
+    app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(health.router)
     app.include_router(snippets.router)
