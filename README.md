@@ -84,7 +84,7 @@ cp .env.example .env
 NEW_PW=$(openssl rand -hex 24)
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$NEW_PW/" .env
 sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql+asyncpg://wispr:$NEW_PW@localhost:5432/wispr|" .env
-sed -i 's|^CORS_ALLOWED_ORIGIN=.*|CORS_ALLOWED_ORIGIN=https://wispr.rushyendra.dev|' .env
+sed -i 's|^CORS_ALLOWED_ORIGINS=.*|CORS_ALLOWED_ORIGINS=https://wispr.rushyendra.dev,https://wispr-web.vercel.app|' .env
 
 # Bring up the prod stack
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
@@ -121,7 +121,7 @@ api.wispr.rushyendra.dev {
 
 - **Native dev** reads `DATABASE_URL` and `REDIS_URL` from `.env` (literal `localhost` URLs).
 - **Compose api service** overrides both in `docker-compose.yml`, pointing at the sibling `db` / `redis` service names. The `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` vars in `.env` are the single source of truth for the postgres credentials, substituted into both the `db` service and the api's reconstructed `DATABASE_URL`.
-- **`CORS_ALLOWED_ORIGIN`** defaults to `http://localhost:3000` so the sibling wispr-web dev server can call this api without preflight failures. Production overrides to `https://wispr.rushyendra.dev`.
+- **`CORS_ALLOWED_ORIGINS`** is a comma-separated list, defaulting to `http://localhost:3000` so the sibling wispr-web dev server can call this api without preflight failures. Production carries both the custom domain and the platform-provided alias (`https://wispr.rushyendra.dev,https://wispr-web.vercel.app`) so previews of the same build that haven't migrated to the custom domain yet still work.
 
 The split exists because `localhost` makes sense for a process running directly on the host, while a containerized api needs to reach sibling services by their compose service name. Keeping postgres credentials as discrete `POSTGRES_*` variables lets both paths share one source of truth.
 
