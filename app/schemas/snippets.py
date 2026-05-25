@@ -37,16 +37,25 @@ Base64Field = Annotated[
     PlainSerializer(_b64_encode, return_type=str, when_used="json"),
 ]
 
-# Anonymous link payload caps. These match the inline-only ceiling for the
-# first ship cycle; chunked file uploads (R2) push the ciphertext bound up
-# but live in a later phase.
-MAX_CIPHERTEXT_BYTES = 64 * 1024
+# Anonymous link payload caps. The 256 KiB inline-file ceiling
+# ([PROJECT.md §10 M2] / §6) drives the ciphertext bound — raw bytes
+# plus a 12-byte IV + 16-byte AES-GCM tag fit within 257 KiB; we pad
+# to 264 KiB so a small amount of base64-decoding slack doesn't
+# bounce a legitimate request. Chunked file uploads (R2) push this
+# further but live in M3.
+MAX_CIPHERTEXT_BYTES = 264 * 1024
 MAX_ENCRYPTED_METADATA_BYTES = 4 * 1024
 
 # TTL bounds for anonymous link mode: floor at one minute (no instant burn
 # races), ceiling at 24 hours per the lifetime cap.
 MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 24 * 60 * 60
+
+# Password-gate bounds. The hash output is fixed at PBKDF2-SHA-256 with
+# a 32-byte derived key; the salt is a fresh 16-byte random value per
+# snippet. Anything else on the wire is a malformed request.
+PASSWORD_HASH_BYTES = 32
+PASSWORD_SALT_BYTES = 16
 
 
 class CreateLinkSnippetRequest(BaseModel):
@@ -66,8 +75,11 @@ class CreateLinkSnippetRequest(BaseModel):
     encrypted_metadata: Base64Field = Field(..., max_length=MAX_ENCRYPTED_METADATA_BYTES)
     ttl_seconds: int = Field(..., ge=MIN_TTL_SECONDS, le=MAX_TTL_SECONDS)
     max_reads: Literal[1] = 1
-    password_hash: Base64Field | None = None
-    password_salt: Base64Field | None = None
+    # Per [D-260526-01], both fields are client-computed: the client
+    # generates a fresh 16-byte salt and a 32-byte PBKDF2-SHA-256 hash
+    # (100 000 iterations) at create time. The server only stores them.
+    password_hash: Base64Field | None = Field(default=None, max_length=PASSWORD_HASH_BYTES)
+    password_salt: Base64Field | None = Field(default=None, max_length=PASSWORD_SALT_BYTES)
 
     @model_validator(mode="after")
     def _password_pair(self) -> Self:
@@ -77,7 +89,43 @@ class CreateLinkSnippetRequest(BaseModel):
             raise ValueError(
                 "password_hash and password_salt must be provided together or omitted together"
             )
+        if (
+            self.password_hash is not None
+            and len(self.password_hash) != PASSWORD_HASH_BYTES
+        ):
+            raise ValueError(f"password_hash must be exactly {PASSWORD_HASH_BYTES} bytes")
+        if (
+            self.password_salt is not None
+            and len(self.password_salt) != PASSWORD_SALT_BYTES
+        ):
+            raise ValueError(f"password_salt must be exactly {PASSWORD_SALT_BYTES} bytes")
         return self
+
+
+class VerifyPasswordRequest(BaseModel):
+    """Body for `POST /snippets/{id}/verify-password`. The client has
+    already computed PBKDF2 with the salt the server returned in the
+    gating 401; the wire only carries the resulting 32-byte hash."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password_hash: Base64Field = Field(..., max_length=PASSWORD_HASH_BYTES)
+
+    @model_validator(mode="after")
+    def _hash_size(self) -> Self:
+        if len(self.password_hash) != PASSWORD_HASH_BYTES:
+            raise ValueError(f"password_hash must be exactly {PASSWORD_HASH_BYTES} bytes")
+        return self
+
+
+class PasswordRequiredResponse(BaseModel):
+    """401 body for `GET /snippets/{id}` when the snippet is gated by
+    a password. The client uses ``password_salt`` to recompute its
+    PBKDF2 hash before calling ``verify-password``. The salt is not a
+    secret — see [D-260526-01]."""
+
+    status: Literal["password_required"] = "password_required"
+    password_salt: Base64Field
 
 
 class CreateSnippetResponse(BaseModel):

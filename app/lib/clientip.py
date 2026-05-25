@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 
-from fastapi import Request
+from starlette.requests import HTTPConnection
 
 # In production, Caddy enforces the upstream trust boundary: it strips
 # any inbound CF-Connecting-IP from clients, then sets it to the actual
@@ -17,19 +17,21 @@ from fastapi import Request
 _CF_CONNECTING_IP = "cf-connecting-ip"
 
 
-def extract_client_ip(request: Request) -> str:
+def extract_client_ip(connection: HTTPConnection) -> str:
     """Best-known address of the requesting client.
 
+    Takes the common Starlette ``HTTPConnection`` base so the same
+    helper works for plain HTTP ``Request`` and ``WebSocket`` upgrades.
     Reads ``CF-Connecting-IP`` if present; falls back to the direct peer
     address otherwise. Returns an empty string when neither is available
     (unit tests with no transport, mostly) so callers don't have to handle
     ``None``.
     """
-    header = request.headers.get(_CF_CONNECTING_IP)
+    header = connection.headers.get(_CF_CONNECTING_IP)
     if header:
         return header.strip()
-    if request.client is not None and request.client.host:
-        return request.client.host
+    if connection.client is not None and connection.client.host:
+        return connection.client.host
     return ""
 
 

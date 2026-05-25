@@ -147,8 +147,36 @@ def burst_per_period(burst: int, period: str) -> tuple[int, int]:
 # to bypass rate limiting (most do).
 _SNIPPETS_CREATE_BURST, _SNIPPETS_CREATE_WINDOW = burst_per_period(20, "hour")
 _SNIPPETS_GET_BURST, _SNIPPETS_GET_WINDOW = burst_per_period(30, "minute")
+_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW = burst_per_period(30, "hour")
 
 snippets_create_anon_limit = rate_limit(
     _SNIPPETS_CREATE_BURST, _SNIPPETS_CREATE_WINDOW, "snippets-create-anon"
 )
 snippets_get_limit = rate_limit(_SNIPPETS_GET_BURST, _SNIPPETS_GET_WINDOW, "snippets-get")
+pair_create_limit = rate_limit(_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW, "pair-create")
+
+
+# Per-(IP, snippet) rate limit for password verification. PROJECT.md
+# §12: 5/min/IP/snippet. The bucket key embeds the snippet id so a
+# rate-limited IP can still verify other snippets it has links to —
+# the threat is brute-forcing one snippet's gate, not a generic
+# verify-endpoint abuse.
+_VERIFY_PASSWORD_BURST, _VERIFY_PASSWORD_WINDOW = burst_per_period(5, "minute")
+
+
+async def verify_password_limit(
+    snippet_id: str,
+    request: Request,
+    redis_client: _RedisDep,
+) -> None:
+    ip = extract_client_ip(request)
+    key = f"rl:verify-password:{snippet_id}:{bucket_key(ip)}"
+    result = await consume_token(
+        redis_client, key, _VERIFY_PASSWORD_BURST, _VERIFY_PASSWORD_WINDOW
+    )
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="rate limit exceeded",
+            headers={"Retry-After": str(max(1, result.retry_after_seconds))},
+        )
