@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+import redis as sync_redis
+from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis, from_url
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.lib.pair_signaling import registry as pair_signaling_registry
 from app.lib.ratelimit import (
     pair_create_limit,
     snippets_create_anon_limit,
@@ -152,3 +156,82 @@ async def redis_only_rate_limit_client(redis_client: Redis) -> AsyncIterator[Asy
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+@pytest.fixture
+def ws_redis() -> Iterator[sync_redis.Redis]:
+    """Sync Redis client for seeding state outside the WS handler.
+
+    The async Redis client lazily binds its connection pool to whichever
+    asyncio loop first awaits it. WebSocket tests use Starlette's
+    ``TestClient`` which runs the ASGI app on its own anyio portal loop,
+    distinct from pytest-asyncio's session loop — so the route's async
+    Redis calls must happen on the portal loop, not the pytest one.
+
+    Test setup therefore seeds redis through the sync client (no loop
+    binding) and lets the route's app-mounted async Redis bind itself
+    cleanly inside the portal. ``flushdb`` clears state per case.
+    """
+    client: sync_redis.Redis = sync_redis.Redis.from_url(_TEST_REDIS_URL, decode_responses=False)
+    client.flushdb()
+    try:
+        yield client
+    finally:
+        client.close()
+
+
+@contextlib.asynccontextmanager
+async def _redis_only_lifespan(app_: object) -> AsyncIterator[None]:
+    """Lifespan for WS tests — opens redis on the portal loop, skips
+    the snippets-purge task.
+
+    Two reasons this exists:
+
+    1. The async redis client must bind to whichever loop will await it.
+       Creating it in pytest's main thread (no loop running) and then
+       awaiting it on Starlette's TestClient portal loop has produced
+       flaky ``sender_offline`` failures on full-PIN-pair flows where
+       the route's redis lookup silently fails.
+    2. The real lifespan also spawns ``run_purge_loop``, which connects
+       to Postgres on its first iteration. With no DB container running
+       that connect noisily fails, and a lingering purge task per
+       TestClient instance accumulates across the suite.
+
+    Opening redis here, on the portal loop, fixes both: every fixture
+    enters a fresh lifespan, redis is loop-bound cleanly, and shutdown
+    closes the same instance on the same loop.
+    """
+    from app.redis_client import close_redis, open_redis  # local: keep top of file tidy
+
+    state = app_  # the FastAPI app instance Starlette passes in
+    state.state.redis = await open_redis()  # type: ignore[attr-defined]
+    try:
+        yield
+    finally:
+        await close_redis(state.state.redis)  # type: ignore[attr-defined]
+
+
+@pytest.fixture
+def ws_client(ws_redis: sync_redis.Redis) -> Iterator[TestClient]:
+    """Sync ``TestClient`` for WebSocket-bearing routes.
+
+    Lifespan is replaced with a redis-only one (see ``_redis_only_lifespan``).
+    HTTP rate-limit deps are stubbed (the WS route has its own inline
+    limiter). The in-process signaling registry is wiped between cases.
+    """
+    _ = ws_redis  # establish dependency order; ws_redis flushes first
+    app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
+    app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
+    app.dependency_overrides[pair_create_limit] = _noop_rate_limit
+    pair_signaling_registry.reset_for_tests()
+    original_lifespan = app.router.lifespan_context
+    app.router.lifespan_context = _redis_only_lifespan
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        app.router.lifespan_context = original_lifespan
+        app.dependency_overrides.pop(snippets_create_anon_limit, None)
+        app.dependency_overrides.pop(snippets_get_limit, None)
+        app.dependency_overrides.pop(pair_create_limit, None)
+        pair_signaling_registry.reset_for_tests()
