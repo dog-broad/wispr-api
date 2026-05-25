@@ -195,3 +195,168 @@ async def test_burn_is_atomic_under_concurrency(
     statuses = [r.status_code for r in responses]
     assert statuses.count(200) == 1, statuses
     assert statuses.count(410) == attempts - 1, statuses
+
+
+# ---------------------------------------------------------------------------
+# Password gate — GET 401 + POST /verify-password
+# ---------------------------------------------------------------------------
+
+
+_RIGHT_HASH = b"\xa5" * 32
+_WRONG_HASH = b"\x5a" * 32
+_SALT = b"\x07" * 16
+
+
+async def _create_with_password(
+    db_client: AsyncClient,
+    hash_bytes: bytes = _RIGHT_HASH,
+    salt_bytes: bytes = _SALT,
+) -> str:
+    create = await db_client.post(
+        "/snippets",
+        json=_link_body(
+            password_hash=_b64(hash_bytes),
+            password_salt=_b64(salt_bytes),
+        ),
+    )
+    assert create.status_code == 201, create.text
+    return str(create.json()["id"])
+
+
+async def test_get_password_protected_returns_401_with_salt(
+    db_client: AsyncClient,
+) -> None:
+    snippet_id = await _create_with_password(db_client)
+    response = await db_client.get(f"/snippets/{snippet_id}")
+    assert response.status_code == 401
+    body = response.json()
+    assert body["status"] == "password_required"
+    assert base64.b64decode(body["password_salt"]) == _SALT
+
+
+async def test_get_password_protected_does_not_burn(db_client: AsyncClient) -> None:
+    """A wrong-password GET must NOT consume the read budget — otherwise
+    a single failed attempt would torch a max_reads=1 snippet."""
+    snippet_id = await _create_with_password(db_client)
+    for _ in range(5):
+        gated = await db_client.get(f"/snippets/{snippet_id}")
+        assert gated.status_code == 401
+
+    # Successful verify on the right hash should still find the snippet
+    # unburned and return it.
+    verified = await db_client.post(
+        f"/snippets/{snippet_id}/verify-password",
+        json={"password_hash": _b64(_RIGHT_HASH)},
+    )
+    assert verified.status_code == 200
+
+
+async def test_verify_password_wrong_hash_returns_401(db_client: AsyncClient) -> None:
+    snippet_id = await _create_with_password(db_client)
+    response = await db_client.post(
+        f"/snippets/{snippet_id}/verify-password",
+        json={"password_hash": _b64(_WRONG_HASH)},
+    )
+    assert response.status_code == 401
+
+
+async def test_verify_password_correct_hash_burns_and_returns_content(
+    db_client: AsyncClient,
+) -> None:
+    snippet_id = await _create_with_password(db_client)
+    first = await db_client.post(
+        f"/snippets/{snippet_id}/verify-password",
+        json={"password_hash": _b64(_RIGHT_HASH)},
+    )
+    assert first.status_code == 200
+    body = first.json()
+    assert body["id"] == snippet_id
+    assert body["read_count"] == 1
+
+    # The second correct-password attempt now sees a burned snippet.
+    second = await db_client.post(
+        f"/snippets/{snippet_id}/verify-password",
+        json={"password_hash": _b64(_RIGHT_HASH)},
+    )
+    assert second.status_code == 410
+    assert second.json() == {"status": "gone", "reason": "burned"}
+
+
+async def test_verify_password_unknown_snippet_returns_404(
+    db_client: AsyncClient,
+) -> None:
+    response = await db_client.post(
+        "/snippets/aaaaaaaaaaaa/verify-password",
+        json={"password_hash": _b64(_RIGHT_HASH)},
+    )
+    assert response.status_code == 404
+
+
+async def test_verify_password_unprotected_snippet_returns_400(
+    db_client: AsyncClient,
+) -> None:
+    create = await db_client.post("/snippets", json=_link_body())
+    snippet_id = create.json()["id"]
+    response = await db_client.post(
+        f"/snippets/{snippet_id}/verify-password",
+        json={"password_hash": _b64(_RIGHT_HASH)},
+    )
+    assert response.status_code == 400
+
+
+async def test_verify_password_rate_limited_per_snippet(
+    rate_limit_client: AsyncClient,
+) -> None:
+    """5/min/IP/snippet from PROJECT.md §12. The 6th attempt from the
+    same IP within a minute on the same snippet returns 429; another
+    snippet from the same IP still gets through."""
+    # Two separate snippets, both password-protected.
+    create_a = await rate_limit_client.post(
+        "/snippets",
+        json=_link_body(
+            password_hash=_b64(_RIGHT_HASH),
+            password_salt=_b64(_SALT),
+        ),
+        headers={"CF-Connecting-IP": "203.0.113.71"},
+    )
+    create_b = await rate_limit_client.post(
+        "/snippets",
+        json=_link_body(
+            password_hash=_b64(_RIGHT_HASH),
+            password_salt=_b64(_SALT),
+        ),
+        headers={"CF-Connecting-IP": "203.0.113.71"},
+    )
+    id_a = create_a.json()["id"]
+    id_b = create_b.json()["id"]
+
+    headers = {"CF-Connecting-IP": "203.0.113.71"}
+    body_wrong = {"password_hash": _b64(_WRONG_HASH)}
+
+    # Five wrong attempts against snippet A burn the bucket.
+    for _ in range(5):
+        resp = await rate_limit_client.post(
+            f"/snippets/{id_a}/verify-password", json=body_wrong, headers=headers
+        )
+        assert resp.status_code == 401
+
+    overflow = await rate_limit_client.post(
+        f"/snippets/{id_a}/verify-password", json=body_wrong, headers=headers
+    )
+    assert overflow.status_code == 429
+    assert "retry-after" in {k.lower() for k in overflow.headers}
+
+    # Snippet B from the same IP is unaffected.
+    other = await rate_limit_client.post(
+        f"/snippets/{id_b}/verify-password", json=body_wrong, headers=headers
+    )
+    assert other.status_code == 401
+
+
+async def test_verify_password_rejects_extra_fields(db_client: AsyncClient) -> None:
+    snippet_id = await _create_with_password(db_client)
+    response = await db_client.post(
+        f"/snippets/{snippet_id}/verify-password",
+        json={"password_hash": _b64(_RIGHT_HASH), "uninvited": "guest"},
+    )
+    assert response.status_code == 422

@@ -20,6 +20,7 @@ from app.lib.ratelimit import (
     pair_create_limit,
     snippets_create_anon_limit,
     snippets_get_limit,
+    verify_password_limit,
 )
 from app.main import app
 
@@ -105,6 +106,7 @@ async def db_client(db_session: AsyncSession, redis_client: Redis) -> AsyncItera
     app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
     app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
     app.dependency_overrides[pair_create_limit] = _noop_rate_limit
+    app.dependency_overrides[verify_password_limit] = _noop_rate_limit
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -113,6 +115,7 @@ async def db_client(db_session: AsyncSession, redis_client: Redis) -> AsyncItera
         app.dependency_overrides.pop(snippets_create_anon_limit, None)
         app.dependency_overrides.pop(snippets_get_limit, None)
         app.dependency_overrides.pop(pair_create_limit, None)
+        app.dependency_overrides.pop(verify_password_limit, None)
 
 
 @pytest.fixture
@@ -138,6 +141,7 @@ async def redis_only_client(redis_client: Redis) -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
     app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
     app.dependency_overrides[pair_create_limit] = _noop_rate_limit
+    app.dependency_overrides[verify_password_limit] = _noop_rate_limit
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -146,6 +150,7 @@ async def redis_only_client(redis_client: Redis) -> AsyncIterator[AsyncClient]:
         app.dependency_overrides.pop(snippets_create_anon_limit, None)
         app.dependency_overrides.pop(snippets_get_limit, None)
         app.dependency_overrides.pop(pair_create_limit, None)
+        app.dependency_overrides.pop(verify_password_limit, None)
 
 
 @pytest.fixture
