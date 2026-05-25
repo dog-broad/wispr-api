@@ -65,7 +65,7 @@ def create_app() -> FastAPI:
     # on a CORS preflight reply.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.cors_allowed_origin],
+        allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization"],
