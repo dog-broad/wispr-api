@@ -4,11 +4,16 @@ import ipaddress
 
 from fastapi import Request
 
-# Header set by Cloudflare on every request that passes through their edge.
-# In production, Caddy enforces the upstream trust boundary: it strips any
-# inbound CF-Connecting-IP from clients, then re-adds it only when the
-# connecting peer falls inside the allowlisted Cloudflare IP range. The api
-# trusts the header as it arrives. See PROJECT.md §3.
+# In production, Caddy enforces the upstream trust boundary: it strips
+# any inbound CF-Connecting-IP from clients, then sets it to the actual
+# connecting peer (`{http.request.remote.host}`) before forwarding. There
+# is no Cloudflare in front of this host today, so the value Caddy
+# attaches is the real client IP. When Cloudflare is added later, the
+# Caddy directive should change to re-trust CF-Connecting-IP only when
+# the connecting peer is inside the published Cloudflare IP range.
+#
+# Without that Caddy stripping, this header would be trivially spoofable
+# by any client and rate limits could be bypassed by rotating the value.
 _CF_CONNECTING_IP = "cf-connecting-ip"
 
 

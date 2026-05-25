@@ -98,11 +98,22 @@ Then add the Caddyfile entry for the api hostname:
 ```caddyfile
 api.wispr.rushyendra.dev {
     encode gzip
+
+    # Trust boundary: no Cloudflare in front of this host, so any
+    # client-supplied CF-Connecting-IP is untrusted. Strip it, then
+    # set it to the actual connecting peer so the FastAPI rate-limiter
+    # buckets on the real client IP. Without these two lines an attacker
+    # can rotate CF-Connecting-IP to bypass per-IP rate limits. When
+    # Cloudflare is added later, swap for a trusted_proxies block that
+    # re-trusts CF-Connecting-IP only from inside the CF IP range.
+    request_header -CF-Connecting-IP
+    request_header CF-Connecting-IP {http.request.remote.host}
+
     reverse_proxy wispr-api-api-1:8000
 }
 ```
 
-…in `~/proxy/Caddyfile`, then `sudo docker restart proxy-caddy`. Let's Encrypt provisions the cert on the first request.
+…in `~/proxy/Caddyfile`, then `docker exec proxy-caddy caddy reload --config /etc/caddy/Caddyfile` (graceful) or `sudo docker restart proxy-caddy` (heavier). Let's Encrypt provisions the cert on the first request.
 
 ## Environment
 
