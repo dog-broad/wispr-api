@@ -12,7 +12,11 @@ from redis.asyncio import Redis, from_url
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.lib.ratelimit import snippets_create_anon_limit, snippets_get_limit
+from app.lib.ratelimit import (
+    pair_create_limit,
+    snippets_create_anon_limit,
+    snippets_get_limit,
+)
 from app.main import app
 
 _TEST_DATABASE_URL = os.environ.get(
@@ -88,9 +92,7 @@ async def _noop_rate_limit() -> None:
 
 
 @pytest.fixture
-async def db_client(
-    db_session: AsyncSession, redis_client: Redis
-) -> AsyncIterator[AsyncClient]:
+async def db_client(db_session: AsyncSession, redis_client: Redis) -> AsyncIterator[AsyncClient]:
     """ASGI client backed by the test database. Rate-limit dependencies are
     overridden to no-ops so endpoint tests stay focused on their own
     behaviour; tests that exercise the limiter use `rate_limit_client`."""
@@ -98,6 +100,7 @@ async def db_client(
     app.state.redis = redis_client
     app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
     app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
+    app.dependency_overrides[pair_create_limit] = _noop_rate_limit
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -105,6 +108,7 @@ async def db_client(
     finally:
         app.dependency_overrides.pop(snippets_create_anon_limit, None)
         app.dependency_overrides.pop(snippets_get_limit, None)
+        app.dependency_overrides.pop(pair_create_limit, None)
 
 
 @pytest.fixture
@@ -115,6 +119,35 @@ async def rate_limit_client(
     can observe 429s. Tests that need a particular IP set the
     ``CF-Connecting-IP`` header on each request."""
     _ = db_session
+    app.state.redis = redis_client
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+
+@pytest.fixture
+async def redis_only_client(redis_client: Redis) -> AsyncIterator[AsyncClient]:
+    """ASGI client backed by redis but not the database. Use for routes
+    that never touch Postgres (e.g. /pair) so the test doesn't need the
+    DB container running. Rate-limit deps are overridden to no-ops."""
+    app.state.redis = redis_client
+    app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
+    app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
+    app.dependency_overrides[pair_create_limit] = _noop_rate_limit
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+    finally:
+        app.dependency_overrides.pop(snippets_create_anon_limit, None)
+        app.dependency_overrides.pop(snippets_get_limit, None)
+        app.dependency_overrides.pop(pair_create_limit, None)
+
+
+@pytest.fixture
+async def redis_only_rate_limit_client(redis_client: Redis) -> AsyncIterator[AsyncClient]:
+    """ASGI client backed by redis with the real rate-limit deps attached.
+    DB-free counterpart to ``rate_limit_client`` for /pair tests."""
     app.state.redis = redis_client
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
