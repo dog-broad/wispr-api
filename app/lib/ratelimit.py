@@ -147,8 +147,10 @@ def burst_per_period(burst: int, period: str) -> tuple[int, int]:
 # to bypass rate limiting (most do).
 _SNIPPETS_CREATE_BURST, _SNIPPETS_CREATE_WINDOW = burst_per_period(20, "hour")
 _SNIPPETS_GET_BURST, _SNIPPETS_GET_WINDOW = burst_per_period(30, "minute")
+_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW = burst_per_period(30, "hour")
 
 snippets_create_anon_limit = rate_limit(
     _SNIPPETS_CREATE_BURST, _SNIPPETS_CREATE_WINDOW, "snippets-create-anon"
 )
 snippets_get_limit = rate_limit(_SNIPPETS_GET_BURST, _SNIPPETS_GET_WINDOW, "snippets-get")
+pair_create_limit = rate_limit(_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW, "pair-create")
