@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -20,7 +21,13 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0")
     # Comma-separated list of origins permitted in CORS. Local dev
     # needs only the Next dev server.
-    cors_allowed_origins: list[str] = Field(default=["http://localhost:3000"])
+    # ``NoDecode`` disables pydantic-settings' built-in JSON decoding
+    # for this field — without it, the env var is interpreted as JSON
+    # and a plain ``https://example.com`` value raises a parse error
+    # before the ``_split_csv`` validator below gets a chance to run.
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
+        default=["http://localhost:3000"]
+    )
     # Optional regex matched against the request Origin in addition to
     # the exact-match list. Production sets this to cover the platform-
     # provided deployment URLs (preview + alias variants); local dev
