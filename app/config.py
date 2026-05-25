@@ -18,11 +18,14 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://wispr:wispr@localhost:5432/wispr",
     )
     redis_url: str = Field(default="redis://localhost:6379/0")
-    # Comma-separated list of origins permitted in CORS. Production
-    # carries both the custom domain and the Vercel build alias so the
-    # platform's auto-generated URL keeps working alongside the
-    # canonical host. Local dev needs only the Next dev server.
+    # Comma-separated list of origins permitted in CORS. Local dev
+    # needs only the Next dev server.
     cors_allowed_origins: list[str] = Field(default=["http://localhost:3000"])
+    # Optional regex matched against the request Origin in addition to
+    # the exact-match list. Production sets this to cover the platform-
+    # provided deployment URLs (preview + alias variants); local dev
+    # leaves it None.
+    cors_allowed_origin_regex: str | None = Field(default=None)
     log_level: str = Field(default="info")
 
     @field_validator("cors_allowed_origins", mode="before")
