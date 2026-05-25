@@ -37,10 +37,13 @@ Base64Field = Annotated[
     PlainSerializer(_b64_encode, return_type=str, when_used="json"),
 ]
 
-# Anonymous link payload caps. These match the inline-only ceiling for the
-# first ship cycle; chunked file uploads (R2) push the ciphertext bound up
-# but live in a later phase.
-MAX_CIPHERTEXT_BYTES = 64 * 1024
+# Anonymous link payload caps. The 256 KiB inline-file ceiling
+# ([PROJECT.md §10 M2] / §6) drives the ciphertext bound — raw bytes
+# plus a 12-byte IV + 16-byte AES-GCM tag fit within 257 KiB; we pad
+# to 264 KiB so a small amount of base64-decoding slack doesn't
+# bounce a legitimate request. Chunked file uploads (R2) push this
+# further but live in M3.
+MAX_CIPHERTEXT_BYTES = 264 * 1024
 MAX_ENCRYPTED_METADATA_BYTES = 4 * 1024
 
 # TTL bounds for anonymous link mode: floor at one minute (no instant burn
