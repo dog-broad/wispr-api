@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -11,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.lib.ids import new_snippet_id
-from app.lib.ratelimit import snippets_create_anon_limit, snippets_get_limit
+from app.lib.ratelimit import (
+    snippets_create_anon_limit,
+    snippets_get_limit,
+    verify_password_limit,
+)
+from app.lib.watch_bus import GoneEvent, ReadEvent
+from app.lib.watch_bus import bus as watch_bus
 from app.models.snippets import ShareMode, Snippet
 from app.schemas.snippets import (
     CreateLinkSnippetRequest,
@@ -19,6 +26,8 @@ from app.schemas.snippets import (
     GetSnippetResponse,
     GoneReason,
     GoneResponse,
+    PasswordRequiredResponse,
+    VerifyPasswordRequest,
 )
 
 router = APIRouter(prefix="/snippets", tags=["snippets"])
@@ -86,6 +95,10 @@ async def create_snippet(
     "/{snippet_id}",
     response_model=GetSnippetResponse,
     responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": PasswordRequiredResponse,
+            "description": "Snippet is password-protected — call verify-password with the hash",
+        },
         status.HTTP_404_NOT_FOUND: {"description": "Snippet ID does not exist"},
         status.HTTP_410_GONE: {
             "model": GoneResponse,
@@ -100,13 +113,117 @@ async def get_snippet(
 ) -> GetSnippetResponse | JSONResponse:
     """Fetch a snippet's ciphertext, burning one read.
 
-    The update is atomic: the row's read_count is incremented only if every
-    "still readable" predicate holds. This avoids the classic read-then-
-    write race that would otherwise let two concurrent receivers both
-    consume a single-read link.
+    Password-protected snippets short-circuit to 401 before the read-
+    count CAS so wrong passwords don't burn the snippet (see
+    [D-260526-01]); the burn happens inside ``verify_password`` instead.
     """
-    # Atomic CAS: increment read_count only if the row is still readable.
-    # RETURNING gives us the post-update row in one round-trip.
+    snippet = await _load_snippet(session, snippet_id)
+    if snippet is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # Terminal states bypass the password gate — the snippet is gone
+    # regardless of whether the caller knows the password.
+    gone_reason = _gone_reason_or_none(snippet)
+    if gone_reason is not None:
+        return JSONResponse(
+            status_code=status.HTTP_410_GONE,
+            content=GoneResponse(reason=gone_reason).model_dump(mode="json"),
+        )
+
+    if snippet.password_hash is not None and snippet.password_salt is not None:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content=PasswordRequiredResponse(
+                password_salt=snippet.password_salt,
+            ).model_dump(mode="json"),
+        )
+
+    return await _burn_and_render(session, snippet_id)
+
+
+@router.post(
+    "/{snippet_id}/verify-password",
+    response_model=GetSnippetResponse,
+    responses={
+        status.HTTP_400_BAD_REQUEST: {"description": "Snippet is not password-protected"},
+        status.HTTP_401_UNAUTHORIZED: {"description": "Password did not match"},
+        status.HTTP_404_NOT_FOUND: {"description": "Snippet ID does not exist"},
+        status.HTTP_410_GONE: {
+            "model": GoneResponse,
+            "description": "Snippet existed but is expired, burned, or taken down",
+        },
+    },
+    dependencies=[Depends(verify_password_limit)],
+)
+async def verify_password(
+    snippet_id: str,
+    body: VerifyPasswordRequest,
+    session: DbSession,
+) -> GetSnippetResponse | JSONResponse:
+    """Validate a password attempt for a gated snippet.
+
+    On match, atomically bumps ``read_count`` and returns the ciphertext
+    — same shape as the unprotected ``GET /snippets/{id}``. Wrong
+    attempts don't touch ``read_count`` so the rate-limited brute-forcer
+    is the only thing that burns through their attempt budget.
+    """
+    snippet = await _load_snippet(session, snippet_id)
+    if snippet is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    gone_reason = _gone_reason_or_none(snippet)
+    if gone_reason is not None:
+        return JSONResponse(
+            status_code=status.HTTP_410_GONE,
+            content=GoneResponse(reason=gone_reason).model_dump(mode="json"),
+        )
+
+    if snippet.password_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="this snippet is not password-protected",
+        )
+
+    if not hmac.compare_digest(snippet.password_hash, body.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    return await _burn_and_render(session, snippet_id)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _load_snippet(session: AsyncSession, snippet_id: str) -> Snippet | None:
+    result: Snippet | None = await session.scalar(
+        select(Snippet).where(Snippet.id == snippet_id)
+    )
+    return result
+
+
+def _gone_reason_or_none(snippet: Snippet) -> GoneReason | None:
+    """Same predicate as the CAS uses, but for a pre-fetched row. Order
+    matters: take-down by the operator outranks natural expiry which
+    outranks burn-out — the reasons are mutually exclusive in practice
+    but the order is the priority we surface."""
+    if snippet.taken_down_at is not None:
+        return GoneReason.taken_down
+    now = datetime.now(tz=UTC)
+    if snippet.expires_at is not None and snippet.expires_at <= now:
+        return GoneReason.expired
+    if snippet.max_reads is not None and snippet.read_count >= snippet.max_reads:
+        return GoneReason.burned
+    return None
+
+
+async def _burn_and_render(
+    session: AsyncSession, snippet_id: str
+) -> GetSnippetResponse | JSONResponse:
+    """Atomic CAS: increment read_count only if the row is still
+    readable. Used by both the unprotected GET and the verify-password
+    success path so the burn semantics stay identical regardless of
+    which entry point landed the request."""
     update_stmt = text(
         """
         UPDATE snippets
@@ -122,49 +239,44 @@ async def get_snippet(
     updated_id = result.scalar_one_or_none()
 
     if updated_id is None:
-        # The CAS failed: either the snippet doesn't exist, or it does but
-        # one of the gating predicates returned false. Disambiguate with a
-        # follow-up SELECT so the client can render the right "this is
-        # gone" page (per PROJECT.md §7.6 — gone is not 404).
-        existing = await session.execute(
-            select(Snippet).where(Snippet.id == snippet_id)
-        )
-        snippet = existing.scalar_one_or_none()
-        if snippet is None:
+        # CAS failed between the load and the burn — race with another
+        # reader or with the purge job. Re-load to pick the most
+        # specific gone-reason.
+        existing = await _load_snippet(session, snippet_id)
+        if existing is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-        reason = _gone_reason(snippet)
+        reason = _gone_reason_or_none(existing) or GoneReason.burned
         return JSONResponse(
             status_code=status.HTTP_410_GONE,
             content=GoneResponse(reason=reason).model_dump(mode="json"),
         )
 
-    # CAS succeeded — the row now has read_count bumped. Fetch the fresh
-    # state to return.
     await session.commit()
-    fresh = await session.execute(select(Snippet).where(Snippet.id == snippet_id))
-    snippet = fresh.scalar_one()
-    return GetSnippetResponse(
-        id=snippet.id,
-        share_mode=snippet.share_mode,
-        content_type=snippet.content_type,
-        ciphertext=snippet.ciphertext_inline or b"",
-        encrypted_metadata=snippet.encrypted_metadata,
-        size_bytes=snippet.size_bytes,
-        created_at=snippet.created_at,
-        expires_at=snippet.expires_at,
-        max_reads=snippet.max_reads,
-        read_count=snippet.read_count,
+    fresh = await _load_snippet(session, snippet_id)
+    if fresh is None:
+        # Vanishingly rare — the purge ran between commit and re-read.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # Notify any /ws/snippet/{id}/watch subscribers. Publish the read
+    # event first so live counters tick, then a gone event if this read
+    # also burned the snippet — watchers receive both in order.
+    await watch_bus.publish(
+        ReadEvent(kind="read", snippet_id=fresh.id, read_count=fresh.read_count)
     )
+    if fresh.max_reads is not None and fresh.read_count >= fresh.max_reads:
+        await watch_bus.publish(
+            GoneEvent(kind="gone", snippet_id=fresh.id, reason="burned")
+        )
 
-
-def _gone_reason(snippet: Snippet) -> GoneReason:
-    """Pick the most specific "why gone" reason for a row that failed the
-    readability CAS. Order matters: take-down by the operator outranks
-    natural expiry which outranks burn-out — the reasons are mutually
-    exclusive in practice but the order is the priority we surface."""
-    if snippet.taken_down_at is not None:
-        return GoneReason.taken_down
-    now = datetime.now(tz=UTC)
-    if snippet.expires_at is not None and snippet.expires_at <= now:
-        return GoneReason.expired
-    return GoneReason.burned
+    return GetSnippetResponse(
+        id=fresh.id,
+        share_mode=fresh.share_mode,
+        content_type=fresh.content_type,
+        ciphertext=fresh.ciphertext_inline or b"",
+        encrypted_metadata=fresh.encrypted_metadata,
+        size_bytes=fresh.size_bytes,
+        created_at=fresh.created_at,
+        expires_at=fresh.expires_at,
+        max_reads=fresh.max_reads,
+        read_count=fresh.read_count,
+    )
