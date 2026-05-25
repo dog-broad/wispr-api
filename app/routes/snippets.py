@@ -17,6 +17,8 @@ from app.lib.ratelimit import (
     snippets_get_limit,
     verify_password_limit,
 )
+from app.lib.watch_bus import GoneEvent, ReadEvent
+from app.lib.watch_bus import bus as watch_bus
 from app.models.snippets import ShareMode, Snippet
 from app.schemas.snippets import (
     CreateLinkSnippetRequest,
@@ -254,6 +256,18 @@ async def _burn_and_render(
     if fresh is None:
         # Vanishingly rare — the purge ran between commit and re-read.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # Notify any /ws/snippet/{id}/watch subscribers. Publish the read
+    # event first so live counters tick, then a gone event if this read
+    # also burned the snippet — watchers receive both in order.
+    await watch_bus.publish(
+        ReadEvent(kind="read", snippet_id=fresh.id, read_count=fresh.read_count)
+    )
+    if fresh.max_reads is not None and fresh.read_count >= fresh.max_reads:
+        await watch_bus.publish(
+            GoneEvent(kind="gone", snippet_id=fresh.id, reason="burned")
+        )
+
     return GetSnippetResponse(
         id=fresh.id,
         share_mode=fresh.share_mode,
