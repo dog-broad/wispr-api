@@ -238,6 +238,17 @@ async def _burn_and_render(
     result = await session.execute(update_stmt, {"id": snippet_id})
     updated_id = result.scalar_one_or_none()
 
+    # The raw SQL UPDATE just bypassed the ORM identity map. The session
+    # is configured with ``expire_on_commit=False``, so any Snippet
+    # instance the request already loaded (e.g. the password check at
+    # the top of the GET handler) would survive the commit below with
+    # its pre-bump ``read_count``. A later ``SELECT`` would then return
+    # that stale instance instead of re-hydrating from the post-update
+    # row, and the watch-bus ReadEvent + burn check downstream would
+    # both fire with stale numbers. Expire now so any re-load reflects
+    # the DB.
+    session.expire_all()
+
     if updated_id is None:
         # CAS failed between the load and the burn — race with another
         # reader or with the purge job. Re-load to pick the most
