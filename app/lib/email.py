@@ -86,7 +86,7 @@ def build_email_transport(
     real Resend sender; its absence selects the log-only dev fallback."""
     if api_key:
         return ResendTransport(api_key=api_key, sender=sender, client=client)
-    logger.warning("RESEND_API_KEY not set — using log-only email transport (dev fallback)")
+    logger.warning("RESEND_API_KEY not set - using log-only email transport (dev fallback)")
     return LogTransport(sender=sender)
 
 

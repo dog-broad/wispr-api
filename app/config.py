@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     # built against this. Local dev is the Next dev server.
     app_base_url: str = Field(default="http://localhost:3000")
 
+    # Session cookie scope. Production sets domain=".wispr.rushyendra.dev"
+    # (the Wispr subtree only, never the apex — keeps the cookie off sibling
+    # projects) and secure=True. Local dev leaves domain unset (host-only on
+    # localhost) and secure=False so the cookie works over plain HTTP.
+    session_cookie_domain: str | None = Field(default=None)
+    session_cookie_secure: bool = Field(default=False)
+
+    # Cloudflare Turnstile secret for verifying magic-link (and later report)
+    # challenges. Unset in local dev — the verifier then bypasses the check so
+    # the flow works without a provider.
+    turnstile_secret_key: str | None = Field(default=None)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

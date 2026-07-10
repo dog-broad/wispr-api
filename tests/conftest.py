@@ -70,7 +70,12 @@ async def db_session(_migrated_database: None) -> AsyncIterator[AsyncSession]:
             yield session
     finally:
         async with maker() as cleanup:
-            await cleanup.execute(sa_text("TRUNCATE TABLE snippets CASCADE"))
+            # TRUNCATE ... CASCADE on users clears every account-scoped table
+            # (sessions, magic_link_tokens, invites, passphrase_lockouts,
+            # email_change_requests, and owned snippets) via their ON DELETE
+            # CASCADE FKs; snippets is named explicitly to also clear anonymous
+            # rows with no owner.
+            await cleanup.execute(sa_text("TRUNCATE TABLE users, snippets CASCADE"))
             await cleanup.commit()
         await engine.dispose()
 

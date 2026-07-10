@@ -16,7 +16,7 @@ from app.jobs.purge import run_purge_loop
 from app.lib.email import build_email_transport
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.redis_client import close_redis, open_redis
-from app.routes import health, pair, pair_ws, snippet_watch, snippets
+from app.routes import auth, health, pair, pair_ws, snippet_watch, snippets
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,7 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(snippets.router)
     app.include_router(snippet_watch.router)
     app.include_router(pair.router)

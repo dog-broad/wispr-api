@@ -155,6 +155,26 @@ snippets_create_anon_limit = rate_limit(
 snippets_get_limit = rate_limit(_SNIPPETS_GET_BURST, _SNIPPETS_GET_WINDOW, "snippets-get")
 pair_create_limit = rate_limit(_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW, "pair-create")
 
+# Magic-link requests are limited two ways: 10/hr/IP and 3/hr/email. The IP
+# limit is a normal per-IP dependency; the email limit is keyed by the
+# normalized address so one IP can't burn a stranger's budget and one address
+# can't be spammed from many IPs.
+_MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW = burst_per_period(10, "hour")
+magic_link_ip_limit = rate_limit(
+    _MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW, "magic-link-ip"
+)
+_MAGIC_LINK_EMAIL_BURST, _MAGIC_LINK_EMAIL_WINDOW = burst_per_period(3, "hour")
+
+
+async def consume_magic_link_email(redis_client: Redis, email: str) -> TokenBucketResult:
+    """Per-email half of the magic-link limit. Returns the bucket result so the
+    caller can stay silent (still 200) on exhaustion rather than leaking that
+    the address exists via a 429."""
+    key = f"rl:magic-link-email:{email}"
+    return await consume_token(
+        redis_client, key, _MAGIC_LINK_EMAIL_BURST, _MAGIC_LINK_EMAIL_WINDOW
+    )
+
 
 # Per-(IP, snippet) rate limit for password verification. PROJECT.md
 # §12: 5/min/IP/snippet. The bucket key embeds the snippet id so a
