@@ -170,6 +170,13 @@ class MagicLinkToken(Base):
         Enum(MagicLinkPurpose, name="magic_link_purpose", native_enum=True),
         nullable=False,
     )
+    # Set only for purpose=sign_up: ties the pending link to the invite that
+    # gets consumed when the account is created at verify time.
+    invite_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("invites.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     token_hash: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, unique=True)
     new_email: Mapped[str | None] = mapped_column(String(_EMAIL_LEN), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
