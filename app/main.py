@@ -6,12 +6,14 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import async_session_maker
 from app.jobs.purge import run_purge_loop
+from app.lib.email import build_email_transport
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.redis_client import close_redis, open_redis
 from app.routes import health, pair, pair_ws, snippet_watch, snippets
@@ -23,6 +25,15 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     app.state.redis = await open_redis()
+    # Shared HTTP client for outbound provider calls (email today; provider
+    # console integrations later). Owned by the lifespan so connections are
+    # pooled and cleanly closed on shutdown.
+    app.state.http_client = httpx.AsyncClient()
+    app.state.email_transport = build_email_transport(
+        api_key=settings.resend_api_key,
+        sender=settings.email_from,
+        client=app.state.http_client,
+    )
     stop_event = asyncio.Event()
     purge_task = asyncio.create_task(
         run_purge_loop(
@@ -43,6 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             purge_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await purge_task
+        await app.state.http_client.aclose()
         await close_redis(app.state.redis)
 
 

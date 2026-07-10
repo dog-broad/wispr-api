@@ -25,9 +25,7 @@ class Settings(BaseSettings):
     # for this field — without it, the env var is interpreted as JSON
     # and a plain ``https://example.com`` value raises a parse error
     # before the ``_split_csv`` validator below gets a chance to run.
-    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
-        default=["http://localhost:3000"]
-    )
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default=["http://localhost:3000"])
     # Optional regex matched against the request Origin in addition to
     # the exact-match list. Production sets this to cover the platform-
     # provided deployment URLs (preview + alias variants); local dev
@@ -48,6 +46,18 @@ class Settings(BaseSettings):
     # matches the cadence in §12; override via env for tests that want to
     # observe a purge tick without waiting (or to disable entirely with 0).
     purge_interval_seconds: int = Field(default=300, ge=0)
+
+    # Transactional email (magic links, audit + confirmation notices). When
+    # ``resend_api_key`` is unset the app falls back to a log-only transport
+    # that writes the message (link included) to the app log, so the auth flow
+    # is exercisable in local dev without an email provider.
+    resend_api_key: str | None = Field(default=None)
+    # Verified sender. Resend's shared sandbox sender works without a domain;
+    # production overrides this with a DKIM-verified address on our domain.
+    email_from: str = Field(default="Wispr <onboarding@resend.dev>")
+    # Public base URL of the web app — magic-link and confirmation URLs are
+    # built against this. Local dev is the Next dev server.
+    app_base_url: str = Field(default="http://localhost:3000")
 
 
 @lru_cache(maxsize=1)
