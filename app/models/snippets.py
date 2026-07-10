@@ -97,7 +97,13 @@ class Snippet(Base):
     password_salt: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
     # --- Ownership / derivation -------------------------------------------
-    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # Null only for anonymous link shares. Deleting the owner hard-deletes
+    # their snippets (account-deletion cascade), so the FK is ON DELETE CASCADE.
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_snippets_owner_user_id_users"),
+        nullable=True,
+    )
     parent_snippet_id: Mapped[str | None] = mapped_column(
         String(12), ForeignKey("snippets.id", ondelete="SET NULL"), nullable=True
     )
