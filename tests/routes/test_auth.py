@@ -9,6 +9,7 @@ from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.lib.auth import SESSION_COOKIE_NAME
 from app.lib.email import EmailMessage, get_email_transport
 from app.lib.ratelimit import magic_link_ip_limit
@@ -44,6 +45,12 @@ async def auth_client(
     capture = _CapturingTransport()
     app.dependency_overrides[get_email_transport] = lambda: capture
     app.dependency_overrides[magic_link_ip_limit] = _noop
+    # Null the Turnstile secret so the challenge is bypassed regardless of what
+    # the developer's local .env carries — these tests exercise the magic-link
+    # logic, not Turnstile.
+    app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
+        update={"turnstile_secret_key": None}
+    )
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -52,6 +59,7 @@ async def auth_client(
         await app.state.http_client.aclose()
         app.dependency_overrides.pop(get_email_transport, None)
         app.dependency_overrides.pop(magic_link_ip_limit, None)
+        app.dependency_overrides.pop(get_settings, None)
 
 
 def _token_from_link(message: EmailMessage) -> str:

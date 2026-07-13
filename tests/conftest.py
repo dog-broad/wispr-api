@@ -61,22 +61,30 @@ def _migrated_database() -> None:
     _run_alembic_upgrade()
 
 
+async def _truncate_all(maker: async_sessionmaker[AsyncSession]) -> None:
+    # TRUNCATE ... CASCADE on users clears every account-scoped table
+    # (sessions, magic_link_tokens, invites, passphrase_lockouts,
+    # email_change_requests, and owned snippets) via their ON DELETE CASCADE
+    # FKs; snippets is named explicitly to also clear anonymous rows with no
+    # owner.
+    async with maker() as cleanup:
+        await cleanup.execute(sa_text("TRUNCATE TABLE users, snippets CASCADE"))
+        await cleanup.commit()
+
+
 @pytest.fixture
 async def db_session(_migrated_database: None) -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(_TEST_DATABASE_URL, pool_pre_ping=True)
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     try:
+        # Truncate on the way IN as well as out, so a test starts clean even if
+        # local dev activity (a manual seed, an ad-hoc curl) left rows behind
+        # in the shared database. Teardown truncation keeps the DB tidy after.
+        await _truncate_all(maker)
         async with maker() as session:
             yield session
     finally:
-        async with maker() as cleanup:
-            # TRUNCATE ... CASCADE on users clears every account-scoped table
-            # (sessions, magic_link_tokens, invites, passphrase_lockouts,
-            # email_change_requests, and owned snippets) via their ON DELETE
-            # CASCADE FKs; snippets is named explicitly to also clear anonymous
-            # rows with no owner.
-            await cleanup.execute(sa_text("TRUNCATE TABLE users, snippets CASCADE"))
-            await cleanup.commit()
+        await _truncate_all(maker)
         await engine.dispose()
 
 
