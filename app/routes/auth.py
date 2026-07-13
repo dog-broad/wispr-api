@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy import delete, select
@@ -163,6 +163,8 @@ async def verify(
     request: Request,
     db: DbSession,
     settings: SettingsDep,
+    background: BackgroundTasks,
+    email_transport: EmailDep,
 ) -> Response:
     """Consume a magic link: create the account on first sign-up, start a
     session, and set the cookie. Single-use and time-limited; a spent or
@@ -178,7 +180,8 @@ async def verify(
 
     token_row.consumed_at = datetime.now(tz=UTC)
 
-    if token_row.purpose is MagicLinkPurpose.sign_in:
+    is_signin = token_row.purpose is MagicLinkPurpose.sign_in
+    if is_signin:
         user = await _resolve_signin(db, token_row)
     elif token_row.purpose is MagicLinkPurpose.sign_up:
         user = await _redeem_signup(db, token_row)
@@ -190,17 +193,54 @@ async def verify(
 
     await db.commit()
 
-    raw_session = await create_session(
-        db, user_id=user.id, device_label=device_label_from_request(request)
-    )
+    device_label = device_label_from_request(request)
+    raw_session = await create_session(db, user_id=user.id, device_label=device_label)
+
+    # Audit every sign-in (not the initial sign-up, which the invitee just
+    # performed themselves). Sent in the background so email latency never
+    # blocks the sign-in response.
+    if is_signin:
+        background.add_task(
+            _send_signin_audit,
+            email_transport,
+            user.email,
+            device_label,
+            settings.app_base_url,
+        )
+
     response: Response = JSONResponse(
         content=VerifyResponse(
             email=user.email,
             needs_passphrase_setup=user.auth_credential_hash is None,
-        ).model_dump()
+        ).model_dump(),
+        background=background,
     )
     set_session_cookie(response, raw_session, settings)
     return response
+
+
+async def _send_signin_audit(
+    email_transport: EmailTransport,
+    to: str,
+    device_label: str,
+    app_base_url: str,
+) -> None:
+    # Coarse "who/when/what device" audit. Country enrichment is deferred until
+    # a GeoIP source is wired; the device label (User-Agent) is the signal we
+    # have without it. The timestamp is stamped at send time inside the task.
+    when = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
+    await email_transport.send(
+        EmailMessage(
+            to=to,
+            subject="New sign-in to Wispr",
+            text_body=(
+                f"You just signed in to Wispr at {when}.\n\n"
+                f"Device: {device_label}\n\n"
+                "If this wasn't you, sign in and remove the device from your "
+                f"settings: {app_base_url}/me/settings"
+            ),
+        )
+    )
 
 
 async def _resolve_signin(db: AsyncSession, token_row: MagicLinkToken) -> User | None:

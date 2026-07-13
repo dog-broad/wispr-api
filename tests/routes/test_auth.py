@@ -119,6 +119,23 @@ async def test_signin_verify_sets_cookie_and_session(
     assert consumed is not None and consumed.consumed_at is not None
 
 
+async def test_signin_sends_audit_email(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    await _seed_user(db_session, "alice@example.com")
+    client, emails = auth_client
+    await client.post("/auth/request-magic-link", json={"email": "alice@example.com"})
+    token = _token_from_link(emails.sent[0])
+
+    await client.get("/auth/verify", params={"token": token})
+
+    # The magic-link email, then a sign-in audit sent as a background task.
+    assert len(emails.sent) == 2
+    audit = emails.sent[1]
+    assert audit.to == "alice@example.com"
+    assert "signed in" in audit.text_body.lower()
+
+
 async def test_verify_is_single_use(
     auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
 ) -> None:
@@ -166,6 +183,8 @@ async def test_signup_with_invite_creates_account_and_consumes_invite(
 
     assert resp.status_code == 200
     assert resp.json()["email"] == "new@example.com"
+    # Sign-up does not fire a sign-in audit — only the magic-link email was sent.
+    assert len(emails.sent) == 1
     # Drop the identity-map snapshot so the re-query reflects the app's commit.
     db_session.expunge_all()
     new_user = await db_session.scalar(select(User).where(User.email == "new@example.com"))
