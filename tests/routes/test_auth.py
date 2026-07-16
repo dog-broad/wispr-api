@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import AsyncIterator
 
 import httpx
@@ -219,6 +220,59 @@ async def test_email_rate_limit_goes_silent_after_three(
         assert resp.status_code == 200
     # 3/hr/email ceiling: the fourth request is a silent success, no email.
     assert len(emails.sent) == 3
+
+
+_SETUP_BODY = {
+    "auth_token": base64.b64encode(b"\x01" * 32).decode(),
+    "auth_credential_salt": base64.b64encode(b"\x02" * 16).decode(),
+    "master_key_salt": base64.b64encode(b"\x03" * 16).decode(),
+}
+
+
+async def _sign_in(client: AsyncClient, emails: _CapturingTransport, email: str) -> None:
+    await client.post("/auth/request-magic-link", json={"email": email})
+    token = _token_from_link(emails.sent[-1])
+    await client.get("/auth/verify", params={"token": token})
+
+
+async def test_setup_passphrase_stores_credential(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    await _seed_user(db_session, "alice@example.com")
+    client, emails = auth_client
+    await _sign_in(client, emails, "alice@example.com")
+
+    resp = await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+
+    assert resp.status_code == 204
+    db_session.expunge_all()
+    user = await db_session.scalar(select(User).where(User.email == "alice@example.com"))
+    assert user is not None
+    assert user.auth_credential_hash is not None
+    assert user.auth_credential_salt == b"\x02" * 16
+    assert user.master_key_salt == b"\x03" * 16
+
+
+async def test_setup_passphrase_is_single_use(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    await _seed_user(db_session, "alice@example.com")
+    client, emails = auth_client
+    await _sign_in(client, emails, "alice@example.com")
+
+    first = await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+    second = await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+
+    assert first.status_code == 204
+    assert second.status_code == 409
+
+
+async def test_setup_passphrase_requires_auth(
+    auth_client: tuple[AsyncClient, _CapturingTransport],
+) -> None:
+    client, _ = auth_client
+    resp = await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+    assert resp.status_code == 401
 
 
 async def test_logout_deletes_session_and_clears_cookie(

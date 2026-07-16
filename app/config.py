@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     # the flow works without a provider.
     turnstile_secret_key: str | None = Field(default=None)
 
+    # Server-side pepper mixed into argon2id when hashing the client-derived
+    # auth token. A deployment secret, never in the DB. Empty in local dev
+    # (argon2id still hashes, just without the extra secret). Changing it in
+    # production invalidates every stored credential — set once.
+    server_pepper: str | None = Field(default=None)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.snippets import Base64Field
 
 # Minimal email validation without pulling in the email-validator dependency:
 # lowercase, strip, and require a single "@" with non-empty local and domain
@@ -44,3 +46,13 @@ class VerifyResponse(BaseModel):
     # True when the account has no passphrase yet — the client routes to
     # first-time setup rather than the per-session prompt.
     needs_passphrase_setup: bool
+
+
+class SetupPassphraseRequest(BaseModel):
+    # The client-derived auth token (PBKDF2, "wispr-auth-v1"). The passphrase
+    # itself never leaves the browser.
+    auth_token: Base64Field = Field(..., max_length=64)
+    # The two client PBKDF2 salts, stored so later sessions re-derive the same
+    # keys. 16 bytes each.
+    auth_credential_salt: Base64Field = Field(..., max_length=32)
+    master_key_salt: Base64Field = Field(..., max_length=32)

@@ -4,17 +4,19 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings, get_settings
 from app.db import get_session
 from app.lib.auth import (
     SESSION_COOKIE_NAME,
+    CurrentUser,
     clear_session_cookie,
     create_session,
     device_label_from_request,
@@ -22,6 +24,7 @@ from app.lib.auth import (
     set_session_cookie,
 )
 from app.lib.clientip import extract_client_ip
+from app.lib.credentials import hash_auth_credential
 from app.lib.email import EmailMessage, EmailTransport, get_email_transport
 from app.lib.ratelimit import consume_magic_link_email, magic_link_ip_limit
 from app.lib.tokens import generate_opaque_token, hash_token
@@ -31,6 +34,7 @@ from app.redis_client import get_redis
 from app.schemas.auth import (
     MagicLinkResponse,
     RequestMagicLinkRequest,
+    SetupPassphraseRequest,
     VerifyResponse,
 )
 
@@ -273,6 +277,27 @@ async def _redeem_signup(db: AsyncSession, token_row: MagicLinkToken) -> User | 
     invite.used_by = user.id
     invite.used_at = datetime.now(tz=UTC)
     return user
+
+
+@router.post("/setup-passphrase", status_code=status.HTTP_204_NO_CONTENT)
+async def setup_passphrase(
+    body: SetupPassphraseRequest,
+    user: CurrentUser,
+    db: DbSession,
+    settings: SettingsDep,
+) -> Response:
+    """First-time passphrase setup. Stores the two client PBKDF2 salts and
+    argon2id(auth_token, pepper); the passphrase and master key never reach the
+    server. Rejects if a passphrase is already set (409)."""
+    if user.auth_credential_hash is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="passphrase already set")
+    user.auth_credential_salt = body.auth_credential_salt
+    user.master_key_salt = body.master_key_salt
+    user.auth_credential_hash = await run_in_threadpool(
+        hash_auth_credential, body.auth_token, settings.server_pepper
+    )
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
