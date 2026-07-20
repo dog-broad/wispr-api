@@ -48,6 +48,20 @@ class VerifyResponse(BaseModel):
     needs_passphrase_setup: bool
 
 
+class SessionResponse(BaseModel):
+    email: str
+    is_admin: bool
+    needs_passphrase_setup: bool
+    master_key_version: int
+    # Client PBKDF2 salts for re-derivation; null until passphrase setup.
+    auth_credential_salt: Base64Field | None = None
+    master_key_salt: Base64Field | None = None
+
+
+class UnlockRequest(BaseModel):
+    auth_token: Base64Field = Field(..., max_length=64)
+
+
 class SetupPassphraseRequest(BaseModel):
     # The client-derived auth token (PBKDF2, "wispr-auth-v1"). The passphrase
     # itself never leaves the browser.

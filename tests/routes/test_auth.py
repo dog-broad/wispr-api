@@ -275,6 +275,60 @@ async def test_setup_passphrase_requires_auth(
     assert resp.status_code == 401
 
 
+async def test_session_reflects_setup_state_and_returns_salts(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    await _seed_user(db_session, "alice@example.com")
+    client, emails = auth_client
+    await _sign_in(client, emails, "alice@example.com")
+
+    before = await client.get("/auth/session")
+    assert before.status_code == 200
+    assert before.json()["needs_passphrase_setup"] is True
+    assert before.json()["auth_credential_salt"] is None
+
+    await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+    after = (await client.get("/auth/session")).json()
+    assert after["needs_passphrase_setup"] is False
+    assert after["master_key_version"] == 1
+    assert base64.b64decode(after["auth_credential_salt"]) == b"\x02" * 16
+    assert base64.b64decode(after["master_key_salt"]) == b"\x03" * 16
+
+
+async def test_session_requires_auth(
+    auth_client: tuple[AsyncClient, _CapturingTransport],
+) -> None:
+    client, _ = auth_client
+    assert (await client.get("/auth/session")).status_code == 401
+
+
+async def test_unlock_accepts_correct_token_rejects_wrong(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    await _seed_user(db_session, "alice@example.com")
+    client, emails = auth_client
+    await _sign_in(client, emails, "alice@example.com")
+    await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+
+    good = await client.post("/auth/unlock", json={"auth_token": _SETUP_BODY["auth_token"]})
+    wrong = await client.post(
+        "/auth/unlock", json={"auth_token": base64.b64encode(b"\x09" * 32).decode()}
+    )
+
+    assert good.status_code == 204
+    assert wrong.status_code == 401
+
+
+async def test_unlock_before_setup_conflicts(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    await _seed_user(db_session, "alice@example.com")
+    client, emails = auth_client
+    await _sign_in(client, emails, "alice@example.com")
+    resp = await client.post("/auth/unlock", json={"auth_token": _SETUP_BODY["auth_token"]})
+    assert resp.status_code == 409
+
+
 async def test_logout_deletes_session_and_clears_cookie(
     auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
 ) -> None:

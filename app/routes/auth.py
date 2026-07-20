@@ -24,7 +24,7 @@ from app.lib.auth import (
     set_session_cookie,
 )
 from app.lib.clientip import extract_client_ip
-from app.lib.credentials import hash_auth_credential
+from app.lib.credentials import hash_auth_credential, verify_auth_credential
 from app.lib.email import EmailMessage, EmailTransport, get_email_transport
 from app.lib.ratelimit import consume_magic_link_email, magic_link_ip_limit
 from app.lib.tokens import generate_opaque_token, hash_token
@@ -34,7 +34,9 @@ from app.redis_client import get_redis
 from app.schemas.auth import (
     MagicLinkResponse,
     RequestMagicLinkRequest,
+    SessionResponse,
     SetupPassphraseRequest,
+    UnlockRequest,
     VerifyResponse,
 )
 
@@ -277,6 +279,42 @@ async def _redeem_signup(db: AsyncSession, token_row: MagicLinkToken) -> User | 
     invite.used_by = user.id
     invite.used_at = datetime.now(tz=UTC)
     return user
+
+
+@router.get("/session", response_model=SessionResponse)
+async def session(user: CurrentUser) -> SessionResponse:
+    """Current auth state plus the client PBKDF2 salts, so a returning tab can
+    re-derive its keys. Salts are non-secret and returned only to the owner."""
+    return SessionResponse(
+        email=user.email,
+        is_admin=user.is_admin,
+        needs_passphrase_setup=user.auth_credential_hash is None,
+        master_key_version=user.master_key_version,
+        auth_credential_salt=user.auth_credential_salt,
+        master_key_salt=user.master_key_salt,
+    )
+
+
+@router.post("/unlock", status_code=status.HTTP_204_NO_CONTENT)
+async def unlock(
+    body: UnlockRequest,
+    user: CurrentUser,
+    settings: SettingsDep,
+) -> Response:
+    """Verify the passphrase for a returning session by checking the client
+    auth token against the stored argon2id credential. The master key itself is
+    derived and held in the browser; the server only confirms right/wrong."""
+    if user.auth_credential_hash is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="passphrase not set")
+    ok = await run_in_threadpool(
+        verify_auth_credential,
+        user.auth_credential_hash,
+        body.auth_token,
+        settings.server_pepper,
+    )
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/setup-passphrase", status_code=status.HTTP_204_NO_CONTENT)
