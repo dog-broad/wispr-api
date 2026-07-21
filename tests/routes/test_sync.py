@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any
 
@@ -7,10 +8,18 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.lib.sync_bus import SnippetCreatedEvent, SnippetDeletedEvent
+from app.lib.sync_bus import bus as sync_bus
 from app.lib.tokens import hash_token
 from app.models.accounts import Session as SessionRow
 from app.models.accounts import User
 from app.models.snippets import ShareMode, Snippet
+
+
+async def _user_id(db: AsyncSession, email: str = "syncuser@example.com") -> str:
+    user = await db.scalar(select(User).where(User.email == email))
+    assert user is not None
+    return str(user.id)
 
 
 def _b64(data: bytes) -> str:
@@ -121,3 +130,34 @@ async def test_burn_removes_from_feed(db_client: AsyncClient, db_session: AsyncS
     assert burn.status_code == 204
     resp = await db_client.get("/me/snippets")
     assert resp.json()["items"] == []
+
+
+async def test_create_publishes_created_event(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    db_client.cookies.set("wispr_session", await _sign_in(db_session))
+    uid = await _user_id(db_session)
+    queue = await sync_bus.subscribe(uid)
+    try:
+        snippet_id = await _create(db_client)
+        event = await asyncio.wait_for(queue.get(), 2.0)
+        assert isinstance(event, SnippetCreatedEvent)
+        assert event.item.id == snippet_id
+    finally:
+        await sync_bus.unsubscribe(uid, queue)
+
+
+async def test_burn_publishes_deleted_event(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    db_client.cookies.set("wispr_session", await _sign_in(db_session))
+    uid = await _user_id(db_session)
+    snippet_id = await _create(db_client)
+    queue = await sync_bus.subscribe(uid)
+    try:
+        await db_client.post(f"/me/snippets/{snippet_id}/burn")
+        event = await asyncio.wait_for(queue.get(), 2.0)
+        assert isinstance(event, SnippetDeletedEvent)
+        assert event.snippet_id == snippet_id
+    finally:
+        await sync_bus.unsubscribe(uid, queue)

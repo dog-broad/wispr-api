@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.lib.auth import CurrentUser
 from app.lib.pairings import lookup_pairing
+from app.lib.sync_bus import SnippetDeletedEvent
+from app.lib.sync_bus import bus as sync_bus
 from app.models.snippets import ShareMode, Snippet
 from app.redis_client import get_redis
 from app.schemas.snippets import RotatePinResponse, SyncItem, SyncListResponse
@@ -119,8 +121,13 @@ async def _delete_owned(session: AsyncSession, snippet_id: str, user_id: uuid.UU
     snippet = await session.scalar(select(Snippet).where(Snippet.id == snippet_id))
     if snippet is None or snippet.owner_user_id != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    was_sync = snippet.share_mode is ShareMode.sync
     await session.execute(delete(Snippet).where(Snippet.id == snippet_id))
     await session.commit()
+    if was_sync:
+        await sync_bus.publish(
+            SnippetDeletedEvent(kind="snippet.deleted", user_id=str(user_id), snippet_id=snippet_id)
+        )
 
 
 @router.delete("/snippets/{snippet_id}", status_code=status.HTTP_204_NO_CONTENT)

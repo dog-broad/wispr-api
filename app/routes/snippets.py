@@ -27,6 +27,8 @@ from app.lib.ratelimit import (
     snippets_get_limit,
     verify_password_limit,
 )
+from app.lib.sync_bus import SnippetCreatedEvent
+from app.lib.sync_bus import bus as sync_bus
 from app.lib.turnstile import verify_turnstile
 from app.lib.watch_bus import GoneEvent, ReadEvent
 from app.lib.watch_bus import bus as watch_bus
@@ -48,6 +50,7 @@ from app.schemas.snippets import (
     PairSignalResponse,
     PasswordRequiredResponse,
     PinResolveResponse,
+    SyncItem,
     VerifyPasswordRequest,
 )
 
@@ -269,6 +272,24 @@ async def _create_sync(
         except IntegrityError:
             await session.rollback()
             continue
+        # Refresh to load the server-defaulted created_at before publishing.
+        await session.refresh(snippet)
+        await sync_bus.publish(
+            SnippetCreatedEvent(
+                kind="snippet.created",
+                user_id=str(user.id),
+                item=SyncItem(
+                    id=snippet.id,
+                    content_type=snippet.content_type,
+                    ciphertext=snippet.ciphertext_inline or b"",
+                    wrapped_dek=snippet.wrapped_dek or b"",
+                    wrapped_dek_iv=snippet.wrapped_dek_iv or b"",
+                    encrypted_metadata=snippet.encrypted_metadata,
+                    size_bytes=snippet.size_bytes,
+                    created_at=snippet.created_at,
+                ),
+            )
+        )
         return CreateSyncResponse(id=snippet.id)
 
     raise HTTPException(
