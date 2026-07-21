@@ -136,9 +136,30 @@ class CreatePinShareSnippetRequest(BaseModel):
         return self
 
 
-# Discriminated on share_mode: link stays anonymous, pin_share is member-only.
+# Sync (Mode 4) — zero-knowledge personal history. The client wraps a
+# per-snippet DEK with its master KEK and sends only the wrapped form; the
+# server never sees the DEK or the KEK. No TTL / max_reads (your own clips).
+WRAPPED_DEK_MAX_BYTES = 64
+WRAP_IV_MAX_BYTES = 16
+
+
+class CreateSyncSnippetRequest(BaseModel):
+    """Body for `POST /snippets` when share_mode=sync (members only)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    share_mode: Literal[ShareMode.sync]
+    content_type: ContentType
+    ciphertext: Base64Field = Field(..., max_length=MAX_CIPHERTEXT_BYTES)
+    wrapped_dek: Base64Field = Field(..., max_length=WRAPPED_DEK_MAX_BYTES)
+    wrapped_dek_iv: Base64Field = Field(..., max_length=WRAP_IV_MAX_BYTES)
+    encrypted_metadata: Base64Field = Field(..., max_length=MAX_ENCRYPTED_METADATA_BYTES)
+
+
+# Discriminated on share_mode: link stays anonymous, pin_share + sync are
+# member-only.
 CreateSnippetRequest = Annotated[
-    CreateLinkSnippetRequest | CreatePinShareSnippetRequest,
+    CreateLinkSnippetRequest | CreatePinShareSnippetRequest | CreateSyncSnippetRequest,
     Field(discriminator="share_mode"),
 ]
 
@@ -147,6 +168,10 @@ class CreatePinShareResponse(BaseModel):
     id: str
     pin: str
     expires_at: datetime
+
+
+class CreateSyncResponse(BaseModel):
+    id: str
 
 
 class ByPinRequest(BaseModel):

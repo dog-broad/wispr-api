@@ -40,6 +40,8 @@ from app.schemas.snippets import (
     CreatePinShareSnippetRequest,
     CreateSnippetRequest,
     CreateSnippetResponse,
+    CreateSyncResponse,
+    CreateSyncSnippetRequest,
     GetSnippetResponse,
     GoneReason,
     GoneResponse,
@@ -136,15 +138,21 @@ async def create_snippet(
     user: OptionalUser,
     redis_client: RedisDep,
     key_vault: KeyVaultDep,
-) -> CreateSnippetResponse | CreatePinShareResponse:
-    """Create a snippet. Link shares are anonymous; PIN shares are members-only
-    (the discriminated body routes here either way)."""
+) -> CreateSnippetResponse | CreatePinShareResponse | CreateSyncResponse:
+    """Create a snippet. Link shares are anonymous; PIN and Sync are
+    members-only (the discriminated body routes here either way)."""
     if isinstance(body, CreatePinShareSnippetRequest):
         if user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="sign in to share by PIN"
             )
         return await _create_pin_share(session, redis_client, key_vault, user, body)
+    if isinstance(body, CreateSyncSnippetRequest):
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="sign in to save clips"
+            )
+        return await _create_sync(session, user, body)
     return await _create_link(session, body)
 
 
@@ -234,6 +242,38 @@ async def _create_pin_share(
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="could not allocate a PIN; try again",
+    )
+
+
+async def _create_sync(
+    session: AsyncSession, user: User, body: CreateSyncSnippetRequest
+) -> CreateSyncResponse:
+    """Create a Sync (Mode 4) item. Zero-knowledge: the server stores the
+    wrapped DEK the client produced with its master KEK and never sees the DEK
+    or the KEK. No TTL / max_reads — these are the owner's own clips."""
+    for _ in range(_ID_RETRIES):
+        snippet = Snippet(
+            id=new_snippet_id(),
+            share_mode=ShareMode.sync,
+            content_type=body.content_type,
+            encrypted_metadata=body.encrypted_metadata,
+            ciphertext_inline=body.ciphertext,
+            size_bytes=len(body.ciphertext),
+            wrapped_dek=body.wrapped_dek,
+            wrapped_dek_iv=body.wrapped_dek_iv,
+            owner_user_id=user.id,
+        )
+        session.add(snippet)
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            continue
+        return CreateSyncResponse(id=snippet.id)
+
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="could not generate a unique snippet id",
     )
 
 
