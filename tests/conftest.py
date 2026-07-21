@@ -20,6 +20,7 @@ from app.lib.pair_signaling import registry as pair_signaling_registry
 from app.lib.ratelimit import (
     by_pin_hour_limit,
     by_pin_minute_limit,
+    files_presign_limit,
     pair_create_limit,
     snippets_create_anon_limit,
     snippets_get_limit,
@@ -37,6 +38,7 @@ _STUBBED_LIMITS = (
     verify_password_limit,
     by_pin_minute_limit,
     by_pin_hour_limit,
+    files_presign_limit,
 )
 
 _TEST_DATABASE_URL = os.environ.get(

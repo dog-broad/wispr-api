@@ -27,6 +27,7 @@ from app.lib.ratelimit import (
     snippets_get_limit,
     verify_password_limit,
 )
+from app.lib.storage import ObjectStore, ObjectStoreDep
 from app.lib.sync_bus import SnippetCreatedEvent
 from app.lib.sync_bus import bus as sync_bus
 from app.lib.turnstile import verify_turnstile
@@ -141,6 +142,7 @@ async def create_snippet(
     user: OptionalUser,
     redis_client: RedisDep,
     key_vault: KeyVaultDep,
+    store: ObjectStoreDep,
 ) -> CreateSnippetResponse | CreatePinShareResponse | CreateSyncResponse:
     """Create a snippet. Link shares are anonymous; PIN and Sync are
     members-only (the discriminated body routes here either way)."""
@@ -149,20 +151,78 @@ async def create_snippet(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="sign in to share by PIN"
             )
-        return await _create_pin_share(session, redis_client, key_vault, user, body)
+        return await _create_pin_share(session, redis_client, key_vault, store, user, body)
     if isinstance(body, CreateSyncSnippetRequest):
         if user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="sign in to save clips"
             )
-        return await _create_sync(session, user, body)
-    return await _create_link(session, body)
+        return await _create_sync(session, store, user, body)
+    return await _create_link(session, store, body)
+
+
+class _ResolvedContent:
+    """Where a snippet's bytes live: inline in the row, or as R2 chunk objects.
+    Exactly one of ``inline`` / ``storage_object_key`` is set."""
+
+    __slots__ = ("chunk_count", "inline", "size_bytes", "storage_object_key")
+
+    def __init__(
+        self,
+        inline: bytes | None,
+        storage_object_key: str | None,
+        chunk_count: int | None,
+        size_bytes: int,
+    ) -> None:
+        self.inline = inline
+        self.storage_object_key = storage_object_key
+        self.chunk_count = chunk_count
+        self.size_bytes = size_bytes
+
+
+async def _resolve_content(
+    store: ObjectStore | None,
+    *,
+    ciphertext: bytes,
+    storage_object_key: str | None,
+    chunk_count: int | None,
+) -> _ResolvedContent:
+    """For a file upload, confirm every chunk object landed in R2 and total the
+    stored size; for inline content, size is just the ciphertext length. The
+    schema guarantees exactly one source is set."""
+    if storage_object_key is None:
+        return _ResolvedContent(ciphertext, None, None, len(ciphertext))
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="file uploads are not configured",
+        )
+    if chunk_count is None:  # guaranteed by the request schema; narrow for typing
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="chunk_count required"
+        )
+    total = 0
+    for index in range(chunk_count):
+        size = await store.head_size(f"{storage_object_key}/{index}")
+        if size is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"upload incomplete: chunk {index} not found",
+            )
+        total += size
+    return _ResolvedContent(None, storage_object_key, chunk_count, total)
 
 
 async def _create_link(
-    session: AsyncSession, body: CreateLinkSnippetRequest
+    session: AsyncSession, store: ObjectStore | None, body: CreateLinkSnippetRequest
 ) -> CreateSnippetResponse:
     expires_at = datetime.now(tz=UTC) + timedelta(seconds=body.ttl_seconds)
+    content = await _resolve_content(
+        store,
+        ciphertext=body.ciphertext,
+        storage_object_key=body.storage_object_key,
+        chunk_count=body.chunk_count,
+    )
 
     last_error: IntegrityError | None = None
     for _ in range(_ID_RETRIES):
@@ -172,8 +232,10 @@ async def _create_link(
             share_mode=ShareMode.link,
             content_type=body.content_type,
             encrypted_metadata=body.encrypted_metadata,
-            ciphertext_inline=body.ciphertext,
-            size_bytes=len(body.ciphertext),
+            ciphertext_inline=content.inline,
+            storage_object_key=content.storage_object_key,
+            chunk_count=content.chunk_count,
+            size_bytes=content.size_bytes,
             expires_at=expires_at,
             max_reads=body.max_reads,
             password_hash=body.password_hash,
@@ -201,6 +263,7 @@ async def _create_pin_share(
     session: AsyncSession,
     redis_client: Redis,
     key_vault: KeyVault,
+    store: ObjectStore | None,
     user: User,
     body: CreatePinShareSnippetRequest,
 ) -> CreatePinShareResponse:
@@ -210,6 +273,12 @@ async def _create_pin_share(
     and live Mode 3 pairings (Redis)."""
     expires_at = datetime.now(tz=UTC) + timedelta(seconds=body.ttl_seconds)
     wrapped, iv, key_version = key_vault.wrap(body.content_key)
+    content = await _resolve_content(
+        store,
+        ciphertext=body.ciphertext,
+        storage_object_key=body.storage_object_key,
+        chunk_count=body.chunk_count,
+    )
 
     for _ in range(_PIN_RETRIES):
         pin = f"{secrets.randbelow(10000):04d}"
@@ -221,8 +290,10 @@ async def _create_pin_share(
             share_mode=ShareMode.pin_share,
             content_type=body.content_type,
             encrypted_metadata=body.encrypted_metadata,
-            ciphertext_inline=body.ciphertext,
-            size_bytes=len(body.ciphertext),
+            ciphertext_inline=content.inline,
+            storage_object_key=content.storage_object_key,
+            chunk_count=content.chunk_count,
+            size_bytes=content.size_bytes,
             pin=pin,
             encrypted_content_key=wrapped,
             content_key_iv=iv,
@@ -249,19 +320,30 @@ async def _create_pin_share(
 
 
 async def _create_sync(
-    session: AsyncSession, user: User, body: CreateSyncSnippetRequest
+    session: AsyncSession,
+    store: ObjectStore | None,
+    user: User,
+    body: CreateSyncSnippetRequest,
 ) -> CreateSyncResponse:
     """Create a Sync (Mode 4) item. Zero-knowledge: the server stores the
     wrapped DEK the client produced with its master KEK and never sees the DEK
     or the KEK. No TTL / max_reads — these are the owner's own clips."""
+    content = await _resolve_content(
+        store,
+        ciphertext=body.ciphertext,
+        storage_object_key=body.storage_object_key,
+        chunk_count=body.chunk_count,
+    )
     for _ in range(_ID_RETRIES):
         snippet = Snippet(
             id=new_snippet_id(),
             share_mode=ShareMode.sync,
             content_type=body.content_type,
             encrypted_metadata=body.encrypted_metadata,
-            ciphertext_inline=body.ciphertext,
-            size_bytes=len(body.ciphertext),
+            ciphertext_inline=content.inline,
+            storage_object_key=content.storage_object_key,
+            chunk_count=content.chunk_count,
+            size_bytes=content.size_bytes,
             wrapped_dek=body.wrapped_dek,
             wrapped_dek_iv=body.wrapped_dek_iv,
             owner_user_id=user.id,

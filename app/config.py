@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     key_vault_master_v2: str | None = Field(default=None)
     key_vault_current_version: int = Field(default=1)
 
+    # Cloudflare R2 (S3-compatible) for file payloads > the inline cap. Each
+    # 1 MiB ciphertext chunk is its own object (see the files decision). All
+    # unset in local dev — the presign endpoint then returns 503, so file
+    # uploads are simply unavailable locally rather than half-working.
+    r2_account_id: str | None = Field(default=None)
+    r2_access_key_id: str | None = Field(default=None)
+    r2_secret_access_key: str | None = Field(default=None)
+    r2_bucket: str | None = Field(default=None)
+    # S3 API endpoint, e.g. https://<account>.r2.cloudflarestorage.com
+    r2_endpoint: str | None = Field(default=None)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
