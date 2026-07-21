@@ -50,9 +50,7 @@ def device_label_from_request(request: Request) -> str:
     return ua[:_DEVICE_LABEL_MAX]
 
 
-async def create_session(
-    db: AsyncSession, user_id: uuid.UUID, device_label: str
-) -> str:
+async def create_session(db: AsyncSession, user_id: uuid.UUID, device_label: str) -> str:
     """Create a session row and return the raw cookie token. Only the token's
     SHA-256 is stored server-side; the raw value lives only in the cookie."""
     raw_token = generate_opaque_token()
@@ -70,15 +68,16 @@ async def create_session(
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
 
-async def current_user(request: Request, db: DbSession) -> User:
-    """Resolve the authenticated user from the session cookie, or 401.
+async def optional_current_user(request: Request, db: DbSession) -> User | None:
+    """Resolve the user from the session cookie, or None if absent/invalid.
 
     Rejects sessions whose user has been soft-deleted. Bumps ``last_seen_at``
-    so the device list reflects recent activity.
+    so the device list reflects recent activity. Used by endpoints that serve
+    both anonymous and authed callers (e.g. snippet create).
     """
     raw_token = request.cookies.get(SESSION_COOKIE_NAME)
     if not raw_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        return None
     row = (
         await db.execute(
             select(Session, User)
@@ -87,13 +86,23 @@ async def current_user(request: Request, db: DbSession) -> User:
         )
     ).first()
     if row is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        return None
     session_row: Session = row[0]
     user: User = row[1]
     if user.deleted_at is not None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        return None
     session_row.last_seen_at = datetime.now(tz=UTC)
     await db.commit()
+    return user
+
+
+OptionalUser = Annotated[User | None, Depends(optional_current_user)]
+
+
+async def current_user(user: OptionalUser) -> User:
+    """Require an authenticated user, or 401."""
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return user
 
 

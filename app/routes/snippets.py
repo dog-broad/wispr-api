@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import hmac
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
+from redis.asyncio import Redis
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
+from app.lib.auth import OptionalUser
 from app.lib.ids import new_snippet_id
+from app.lib.keyvault import KeyVault, get_key_vault
+from app.lib.pairings import lookup_pairing
 from app.lib.ratelimit import (
     snippets_create_anon_limit,
     snippets_get_limit,
@@ -19,9 +24,14 @@ from app.lib.ratelimit import (
 )
 from app.lib.watch_bus import GoneEvent, ReadEvent
 from app.lib.watch_bus import bus as watch_bus
+from app.models.accounts import User
 from app.models.snippets import ShareMode, Snippet
+from app.redis_client import get_redis
 from app.schemas.snippets import (
     CreateLinkSnippetRequest,
+    CreatePinShareResponse,
+    CreatePinShareSnippetRequest,
+    CreateSnippetRequest,
     CreateSnippetResponse,
     GetSnippetResponse,
     GoneReason,
@@ -29,6 +39,11 @@ from app.schemas.snippets import (
     PasswordRequiredResponse,
     VerifyPasswordRequest,
 )
+
+RedisDep = Annotated[Redis, Depends(get_redis)]
+KeyVaultDep = Annotated[KeyVault, Depends(get_key_vault)]
+
+_PIN_RETRIES = 8
 
 router = APIRouter(prefix="/snippets", tags=["snippets"])
 
@@ -43,19 +58,30 @@ _ID_RETRIES = 5
 @router.post(
     "",
     status_code=status.HTTP_201_CREATED,
-    response_model=CreateSnippetResponse,
+    response_model=None,
     dependencies=[Depends(snippets_create_anon_limit)],
 )
 async def create_snippet(
-    body: CreateLinkSnippetRequest,
+    body: CreateSnippetRequest,
     session: DbSession,
-) -> CreateSnippetResponse:
-    """Create an anonymous Link snippet.
+    user: OptionalUser,
+    redis_client: RedisDep,
+    key_vault: KeyVaultDep,
+) -> CreateSnippetResponse | CreatePinShareResponse:
+    """Create a snippet. Link shares are anonymous; PIN shares are members-only
+    (the discriminated body routes here either way)."""
+    if isinstance(body, CreatePinShareSnippetRequest):
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="sign in to share by PIN"
+            )
+        return await _create_pin_share(session, redis_client, key_vault, user, body)
+    return await _create_link(session, body)
 
-    Only the link shape is accepted. PIN-share and sync shapes are rejected
-    at the schema layer (Pydantic discriminator on share_mode), so the
-    handler only sees well-formed link requests.
-    """
+
+async def _create_link(
+    session: AsyncSession, body: CreateLinkSnippetRequest
+) -> CreateSnippetResponse:
     expires_at = datetime.now(tz=UTC) + timedelta(seconds=body.ttl_seconds)
 
     last_error: IntegrityError | None = None
@@ -88,6 +114,57 @@ async def create_snippet(
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=f"could not generate a unique snippet id: {last_error}",
+    )
+
+
+async def _create_pin_share(
+    session: AsyncSession,
+    redis_client: Redis,
+    key_vault: KeyVault,
+    user: User,
+    body: CreatePinShareSnippetRequest,
+) -> CreatePinShareResponse:
+    """Create a member PIN share. The client's raw content key is wrapped with
+    the key-vault master before storage (Mode 2 is encryption-at-rest, not ZK).
+    The 4-digit PIN must be unique across live Mode 2 shares (DB unique index)
+    and live Mode 3 pairings (Redis)."""
+    expires_at = datetime.now(tz=UTC) + timedelta(seconds=body.ttl_seconds)
+    wrapped, iv, key_version = key_vault.wrap(body.content_key)
+
+    for _ in range(_PIN_RETRIES):
+        pin = f"{secrets.randbelow(10000):04d}"
+        # Cross-mode collision: never mint a PIN that's a live pair handshake.
+        if await lookup_pairing(redis_client, pin) is not None:
+            continue
+        snippet = Snippet(
+            id=new_snippet_id(),
+            share_mode=ShareMode.pin_share,
+            content_type=body.content_type,
+            encrypted_metadata=body.encrypted_metadata,
+            ciphertext_inline=body.ciphertext,
+            size_bytes=len(body.ciphertext),
+            pin=pin,
+            encrypted_content_key=wrapped,
+            content_key_iv=iv,
+            key_version=key_version,
+            owner_user_id=user.id,
+            expires_at=expires_at,
+            max_reads=body.max_reads,
+            password_hash=body.password_hash,
+            password_salt=body.password_salt,
+        )
+        session.add(snippet)
+        try:
+            await session.commit()
+        except IntegrityError:
+            # PIN or id collided against a live row — reroll both.
+            await session.rollback()
+            continue
+        return CreatePinShareResponse(id=snippet.id, pin=pin, expires_at=expires_at)
+
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="could not allocate a PIN; try again",
     )
 
 
@@ -196,9 +273,7 @@ async def verify_password(
 
 
 async def _load_snippet(session: AsyncSession, snippet_id: str) -> Snippet | None:
-    result: Snippet | None = await session.scalar(
-        select(Snippet).where(Snippet.id == snippet_id)
-    )
+    result: Snippet | None = await session.scalar(select(Snippet).where(Snippet.id == snippet_id))
     return result
 
 
@@ -275,9 +350,7 @@ async def _burn_and_render(
         ReadEvent(kind="read", snippet_id=fresh.id, read_count=fresh.read_count)
     )
     if fresh.max_reads is not None and fresh.read_count >= fresh.max_reads:
-        await watch_bus.publish(
-            GoneEvent(kind="gone", snippet_id=fresh.id, reason="burned")
-        )
+        await watch_bus.publish(GoneEvent(kind="gone", snippet_id=fresh.id, reason="burned"))
 
     return GetSnippetResponse(
         id=fresh.id,

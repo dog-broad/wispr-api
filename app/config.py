@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     # production invalidates every stored credential — set once.
     server_pepper: str | None = Field(default=None)
 
+    # PIN-share key vault (Mode 2). base64-encoded 32-byte AES keys that wrap
+    # per-share content keys at rest; identified by monotonic version for
+    # rotation. Deployment secrets, never in the DB. Unset in local dev — the
+    # vault then uses a deterministic insecure dev key (loud warning). Losing
+    # the production key makes every Mode 2 share undecryptable.
+    key_vault_master_v1: str | None = Field(default=None)
+    key_vault_master_v2: str | None = Field(default=None)
+    key_vault_current_version: int = Field(default=1)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

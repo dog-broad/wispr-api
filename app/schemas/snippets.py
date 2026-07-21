@@ -89,17 +89,64 @@ class CreateLinkSnippetRequest(BaseModel):
             raise ValueError(
                 "password_hash and password_salt must be provided together or omitted together"
             )
-        if (
-            self.password_hash is not None
-            and len(self.password_hash) != PASSWORD_HASH_BYTES
-        ):
+        if self.password_hash is not None and len(self.password_hash) != PASSWORD_HASH_BYTES:
             raise ValueError(f"password_hash must be exactly {PASSWORD_HASH_BYTES} bytes")
-        if (
-            self.password_salt is not None
-            and len(self.password_salt) != PASSWORD_SALT_BYTES
-        ):
+        if self.password_salt is not None and len(self.password_salt) != PASSWORD_SALT_BYTES:
             raise ValueError(f"password_salt must be exactly {PASSWORD_SALT_BYTES} bytes")
         return self
+
+
+# PIN-share (Mode 2). Longer TTL ceiling than link (up to 7 days) and a
+# raw 32-byte content key the server wraps at rest. max_reads may be null
+# (unlimited within TTL).
+PIN_MAX_TTL_SECONDS = 7 * 24 * 60 * 60
+CONTENT_KEY_BYTES = 32
+PIN_MAX_READS_CEILING = 1000
+
+
+class CreatePinShareSnippetRequest(BaseModel):
+    """Body for `POST /snippets` when share_mode=pin_share (members only).
+
+    Unlike link, the client sends the raw ``content_key`` — Mode 2 is
+    encryption-at-rest under operator trust, not zero-knowledge. The server
+    wraps the key with the key-vault master before storing it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    share_mode: Literal[ShareMode.pin_share]
+    content_type: ContentType
+    ciphertext: Base64Field = Field(..., max_length=MAX_CIPHERTEXT_BYTES)
+    content_key: Base64Field = Field(..., max_length=CONTENT_KEY_BYTES)
+    encrypted_metadata: Base64Field = Field(..., max_length=MAX_ENCRYPTED_METADATA_BYTES)
+    ttl_seconds: int = Field(..., ge=MIN_TTL_SECONDS, le=PIN_MAX_TTL_SECONDS)
+    # null = unlimited reads within the TTL.
+    max_reads: int | None = Field(default=None)
+    password_hash: Base64Field | None = Field(default=None, max_length=PASSWORD_HASH_BYTES)
+    password_salt: Base64Field | None = Field(default=None, max_length=PASSWORD_SALT_BYTES)
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        if len(self.content_key) != CONTENT_KEY_BYTES:
+            raise ValueError(f"content_key must be exactly {CONTENT_KEY_BYTES} bytes")
+        if self.max_reads is not None and not (1 <= self.max_reads <= PIN_MAX_READS_CEILING):
+            raise ValueError(f"max_reads must be null or between 1 and {PIN_MAX_READS_CEILING}")
+        if (self.password_hash is None) != (self.password_salt is None):
+            raise ValueError("password_hash and password_salt must be provided together")
+        return self
+
+
+# Discriminated on share_mode: link stays anonymous, pin_share is member-only.
+CreateSnippetRequest = Annotated[
+    CreateLinkSnippetRequest | CreatePinShareSnippetRequest,
+    Field(discriminator="share_mode"),
+]
+
+
+class CreatePinShareResponse(BaseModel):
+    id: str
+    pin: str
+    expires_at: datetime
 
 
 class VerifyPasswordRequest(BaseModel):
