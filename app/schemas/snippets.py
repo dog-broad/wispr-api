@@ -225,6 +225,8 @@ class GoneReason(enum.StrEnum):
     expired = "expired"
     burned = "burned"
     taken_down = "taken_down"
+    # Mode 2 PIN auto-invalidated after too many wrong attempts (§7.6.7 #7).
+    disabled = "disabled"
 
 
 class GoneResponse(BaseModel):

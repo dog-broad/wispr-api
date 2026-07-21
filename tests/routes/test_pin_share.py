@@ -6,7 +6,7 @@ from typing import Any
 
 from httpx import AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.lib.keyvault import get_key_vault
@@ -223,3 +223,40 @@ async def test_rotate_pin_non_owner_is_404(
     db_client.cookies.set("wispr_session", await _sign_in(db_session, email="other@example.com"))
     resp = await db_client.post(f"/me/snippets/{snippet_id}/rotate-pin")
     assert resp.status_code == 404
+
+
+async def _set_failed_attempts(db: AsyncSession, snippet_id: str, n: int) -> None:
+    await db.execute(update(Snippet).where(Snippet.id == snippet_id).values(pin_failed_attempts=n))
+    await db.commit()
+
+
+async def test_by_pin_disabled_at_attempt_cap(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    snippet_id, pin = await _create_pin(db_client, db_session)
+    await _set_failed_attempts(db_session, snippet_id, 50)
+    resp = await db_client.post("/snippets/by-pin", json={"pin": pin})
+    assert resp.status_code == 410
+    assert resp.json()["reason"] == "disabled"
+
+
+async def test_wrong_password_trips_disable_at_cap(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    pw_hash = _b64(b"\xaa" * 32)
+    pw_salt = _b64(b"\xbb" * 16)
+    snippet_id, pin = await _create_pin(
+        db_client, db_session, password_hash=pw_hash, password_salt=pw_salt, max_reads=5
+    )
+    await _set_failed_attempts(db_session, snippet_id, 49)
+
+    resp = await db_client.post(
+        "/snippets/by-pin",
+        json={"pin": pin, "password_hash": _b64(b"\x00" * 32)},
+    )
+    assert resp.status_code == 410
+    assert resp.json()["reason"] == "disabled"
+
+    db_session.expunge_all()
+    snip = await db_session.scalar(select(Snippet).where(Snippet.id == snippet_id))
+    assert snip is not None and snip.pin_failed_attempts == 50

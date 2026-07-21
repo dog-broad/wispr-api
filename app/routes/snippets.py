@@ -59,6 +59,10 @@ _PIN_RETRIES = 8
 _BY_PIN_TURNSTILE_AFTER = 3
 _BY_PIN_FAIL_TTL_SECONDS = 3600
 
+# A Mode 2 share auto-invalidates after this many wrong password attempts,
+# counted on the row across all IPs (§7.6.7 #7).
+_MAX_PIN_FAILED_ATTEMPTS = 50
+
 
 def _http_client(request: Request) -> httpx.AsyncClient:
     client: httpx.AsyncClient = request.app.state.http_client
@@ -85,6 +89,29 @@ async def _record_bypin_failure(redis_client: Redis, ip: str) -> None:
 
 async def _reset_bypin_failures(redis_client: Redis, ip: str) -> None:
     await redis_client.delete(_by_pin_fail_key(ip))
+
+
+def _pin_disabled() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_410_GONE,
+        content=GoneResponse(reason=GoneReason.disabled).model_dump(mode="json"),
+    )
+
+
+async def _increment_pin_failures(session: AsyncSession, snippet_id: str) -> int:
+    """Atomically bump the row's cross-IP wrong-attempt counter and return the
+    new value, so a concurrent brute-force can't undercount toward the cap."""
+    result = await session.execute(
+        text(
+            "UPDATE snippets SET pin_failed_attempts = pin_failed_attempts + 1 "
+            "WHERE id = :id RETURNING pin_failed_attempts"
+        ),
+        {"id": snippet_id},
+    )
+    count = int(result.scalar_one())
+    session.expire_all()  # raw UPDATE bypassed the ORM identity map
+    await session.commit()
+    return count
 
 
 router = APIRouter(prefix="/snippets", tags=["snippets"])
@@ -266,6 +293,10 @@ async def resolve_by_pin(
             content=GoneResponse(reason=gone_reason).model_dump(mode="json"),
         )
 
+    # Auto-invalidated after too many wrong password attempts (cross-IP).
+    if snippet.pin_failed_attempts >= _MAX_PIN_FAILED_ATTEMPTS:
+        return _pin_disabled()
+
     if snippet.password_hash is not None and snippet.password_salt is not None:
         if body.password_hash is None:
             return JSONResponse(
@@ -276,6 +307,9 @@ async def resolve_by_pin(
             )
         if not hmac.compare_digest(snippet.password_hash, body.password_hash):
             await _record_bypin_failure(redis_client, ip)
+            attempts = await _increment_pin_failures(session, snippet.id)
+            if attempts >= _MAX_PIN_FAILED_ATTEMPTS:
+                return _pin_disabled()
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"reason": "password_incorrect"},
