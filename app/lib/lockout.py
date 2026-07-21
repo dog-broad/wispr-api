@@ -8,10 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.accounts import PassphraseLockout
 
-# Passphrase brute-force protection (PROJECT.md §3, [D-0024-12]): 10 wrong
-# attempts in a rolling 15-minute window lock the account for an hour, and the
-# alert email is throttled to at most one per 24h regardless of how many
-# lockout events fire.
+# Passphrase brute-force protection: 10 wrong attempts in a rolling 15-minute
+# window lock the account for an hour, and the alert email is throttled to at
+# most one per 24h regardless of how many lockout events fire.
 LOCK_THRESHOLD = 10
 LOCK_WINDOW = timedelta(minutes=15)
 LOCK_DURATION = timedelta(hours=1)
