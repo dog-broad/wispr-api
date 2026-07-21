@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.db import async_session_maker
 from app.jobs.purge import run_purge_loop
 from app.lib.email import build_email_transport
+from app.lib.storage import build_object_store
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.redis_client import close_redis, open_redis
 from app.routes import auth, files, health, me, pair, pair_ws, snippet_watch, snippets, sync_ws
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             async_session_maker,
             settings.purge_interval_seconds,
             stop_event,
+            build_object_store(settings),
         ),
         name="purge-loop",
     )
