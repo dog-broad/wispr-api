@@ -3,9 +3,9 @@ from __future__ import annotations
 import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from redis.asyncio import Redis
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,3 +72,20 @@ async def rotate_pin(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="could not allocate a PIN; try again",
     )
+
+
+@router.delete("/snippets/{snippet_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_snippet(
+    snippet_id: str,
+    user: CurrentUser,
+    session: DbSession,
+) -> Response:
+    """Hard-delete a snippet the caller owns (PIN "delete now"; also the Sync
+    delete path). Owner mismatch / unknown id returns 404. Idempotent enough:
+    a second call after deletion is a 404."""
+    snippet = await session.scalar(select(Snippet).where(Snippet.id == snippet_id))
+    if snippet is None or snippet.owner_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    await session.execute(delete(Snippet).where(Snippet.id == snippet_id))
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

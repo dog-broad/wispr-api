@@ -260,3 +260,27 @@ async def test_wrong_password_trips_disable_at_cap(
     db_session.expunge_all()
     snip = await db_session.scalar(select(Snippet).where(Snippet.id == snippet_id))
     assert snip is not None and snip.pin_failed_attempts == 50
+
+
+async def test_delete_now_removes_share(db_client: AsyncClient, db_session: AsyncSession) -> None:
+    snippet_id, pin = await _create_pin(db_client, db_session)
+    resp = await db_client.request("DELETE", f"/me/snippets/{snippet_id}")
+    assert resp.status_code == 204
+    # Gone: the PIN no longer resolves.
+    assert (await db_client.post("/snippets/by-pin", json={"pin": pin})).status_code == 404
+
+
+async def test_delete_now_non_owner_is_404(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    snippet_id, _pin = await _create_pin(db_client, db_session)
+    db_client.cookies.set("wispr_session", await _sign_in(db_session, email="other@example.com"))
+    resp = await db_client.request("DELETE", f"/me/snippets/{snippet_id}")
+    assert resp.status_code == 404
+
+
+async def test_delete_now_requires_auth(db_client: AsyncClient, db_session: AsyncSession) -> None:
+    snippet_id, _pin = await _create_pin(db_client, db_session)
+    db_client.cookies.clear()
+    resp = await db_client.request("DELETE", f"/me/snippets/{snippet_id}")
+    assert resp.status_code == 401
