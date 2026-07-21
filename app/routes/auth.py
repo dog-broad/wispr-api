@@ -26,6 +26,8 @@ from app.lib.auth import (
 from app.lib.clientip import extract_client_ip
 from app.lib.credentials import hash_auth_credential, verify_auth_credential
 from app.lib.email import EmailMessage, EmailTransport, get_email_transport
+from app.lib.lockout import clear as clear_lockout
+from app.lib.lockout import is_locked, register_failure
 from app.lib.ratelimit import consume_magic_link_email, magic_link_ip_limit
 from app.lib.tokens import generate_opaque_token, hash_token
 from app.lib.turnstile import verify_turnstile
@@ -295,26 +297,59 @@ async def session(user: CurrentUser) -> SessionResponse:
     )
 
 
-@router.post("/unlock", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/unlock")
 async def unlock(
     body: UnlockRequest,
     user: CurrentUser,
+    db: DbSession,
     settings: SettingsDep,
+    background: BackgroundTasks,
+    email_transport: EmailDep,
 ) -> Response:
     """Verify the passphrase for a returning session by checking the client
-    auth token against the stored argon2id credential. The master key itself is
-    derived and held in the browser; the server only confirms right/wrong."""
+    auth token against the stored argon2id credential (204). Ten wrong attempts
+    in 15 min lock the account for an hour (423) and fire a throttled alert;
+    the master key is derived in the browser, the server only confirms."""
     if user.auth_credential_hash is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="passphrase not set")
+
+    now = datetime.now(tz=UTC)
+    if await is_locked(db, user.id, now):
+        return JSONResponse(status_code=status.HTTP_423_LOCKED, content={"reason": "locked"})
+
     ok = await run_in_threadpool(
         verify_auth_credential,
         user.auth_credential_hash,
         body.auth_token,
         settings.server_pepper,
     )
-    if not ok:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if ok:
+        await clear_lockout(db, user.id, now)
+        await db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    result = await register_failure(db, user.id, now)
+    await db.commit()
+    if result.send_email:
+        background.add_task(_send_lockout_audit, email_transport, user.email, settings.app_base_url)
+    reason = "locked" if result.locked else "wrong_passphrase"
+    code = status.HTTP_423_LOCKED if result.locked else status.HTTP_401_UNAUTHORIZED
+    return JSONResponse(status_code=code, content={"reason": reason}, background=background)
+
+
+async def _send_lockout_audit(email_transport: EmailTransport, to: str, app_base_url: str) -> None:
+    await email_transport.send(
+        EmailMessage(
+            to=to,
+            subject="Your Wispr account was locked",
+            text_body=(
+                "Your Wispr account was locked for one hour after 10 failed "
+                "passphrase attempts.\n\n"
+                "If this was you, just wait and try again. If it wasn't, sign in "
+                f"and review your devices: {app_base_url}/me/settings"
+            ),
+        )
+    )
 
 
 @router.post("/setup-passphrase", status_code=status.HTTP_204_NO_CONTENT)

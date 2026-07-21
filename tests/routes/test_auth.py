@@ -329,6 +329,28 @@ async def test_unlock_before_setup_conflicts(
     assert resp.status_code == 409
 
 
+async def test_lockout_after_ten_wrong_unlock_attempts(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    await _seed_user(db_session, "alice@example.com")
+    client, emails = auth_client
+    await _sign_in(client, emails, "alice@example.com")
+    await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+    wrong = base64.b64encode(b"\x09" * 32).decode()
+
+    codes = []
+    for _ in range(10):
+        codes.append((await client.post("/auth/unlock", json={"auth_token": wrong})).status_code)
+
+    assert codes[:9] == [401] * 9
+    assert codes[9] == 423  # tenth attempt locks
+    # The correct passphrase is now rejected while locked.
+    good = await client.post("/auth/unlock", json={"auth_token": _SETUP_BODY["auth_token"]})
+    assert good.status_code == 423
+    # Exactly one lockout alert email fired.
+    assert len([m for m in emails.sent if "locked" in m.subject.lower()]) == 1
+
+
 async def test_logout_deletes_session_and_clears_cookie(
     auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
 ) -> None:
