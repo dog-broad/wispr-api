@@ -289,6 +289,7 @@ class PinResolveResponse(BaseModel):
     id: str
     content_type: ContentType
     content_key: Base64Field
+    # Empty when file-backed; fetch + decrypt the chunk objects at download_urls.
     ciphertext: Base64Field
     encrypted_metadata: Base64Field
     size_bytes: int
@@ -296,6 +297,8 @@ class PinResolveResponse(BaseModel):
     expires_at: datetime | None
     max_reads: int | None
     read_count: int
+    chunk_count: int | None = None
+    download_urls: list[str] | None = None
 
 
 class PairSignalResponse(BaseModel):
@@ -357,6 +360,8 @@ class GetSnippetResponse(BaseModel):
     id: str
     share_mode: ShareMode
     content_type: ContentType
+    # Empty when the content is file-backed; the client fetches + decrypts the
+    # chunk objects at ``download_urls`` (one presigned GET per chunk) instead.
     ciphertext: Base64Field
     encrypted_metadata: Base64Field
     size_bytes: int
@@ -364,3 +369,5 @@ class GetSnippetResponse(BaseModel):
     expires_at: datetime | None
     max_reads: int | None
     read_count: int
+    chunk_count: int | None = None
+    download_urls: list[str] | None = None

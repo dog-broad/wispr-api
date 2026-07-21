@@ -198,9 +198,7 @@ async def _resolve_content(
             detail="file uploads are not configured",
         )
     if chunk_count is None:  # guaranteed by the request schema; narrow for typing
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="chunk_count required"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="chunk_count required")
     total = 0
     for index in range(chunk_count):
         size = await store.head_size(f"{storage_object_key}/{index}")
@@ -393,6 +391,7 @@ async def resolve_by_pin(
     key_vault: KeyVaultDep,
     settings: SettingsDep,
     http_client: HttpClient,
+    store: ObjectStoreDep,
 ) -> PinResolveResponse | PairSignalResponse | JSONResponse:
     """Resolve a 4-digit PIN. A live Mode 3 pairing returns a pair signal; a
     Mode 2 share returns its ciphertext + server-unwrapped content key (burning
@@ -459,7 +458,7 @@ async def resolve_by_pin(
             )
 
     await _reset_bypin_failures(redis_client, ip)
-    return await _burn_and_render_pin(session, snippet.id, key_vault)
+    return await _burn_and_render_pin(session, snippet.id, key_vault, store)
 
 
 @router.get(
@@ -481,6 +480,7 @@ async def resolve_by_pin(
 async def get_snippet(
     snippet_id: str,
     session: DbSession,
+    store: ObjectStoreDep,
 ) -> GetSnippetResponse | JSONResponse:
     """Fetch a snippet's ciphertext, burning one read.
 
@@ -509,7 +509,7 @@ async def get_snippet(
             ).model_dump(mode="json"),
         )
 
-    return await _burn_and_render(session, snippet_id)
+    return await _burn_and_render(session, snippet_id, store)
 
 
 @router.post(
@@ -530,6 +530,7 @@ async def verify_password(
     snippet_id: str,
     body: VerifyPasswordRequest,
     session: DbSession,
+    store: ObjectStoreDep,
 ) -> GetSnippetResponse | JSONResponse:
     """Validate a password attempt for a gated snippet.
 
@@ -558,7 +559,7 @@ async def verify_password(
     if not hmac.compare_digest(snippet.password_hash, body.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-    return await _burn_and_render(session, snippet_id)
+    return await _burn_and_render(session, snippet_id, store)
 
 
 # ---------------------------------------------------------------------------
@@ -639,8 +640,24 @@ async def _burn_cas(session: AsyncSession, snippet_id: str) -> Snippet | JSONRes
     return fresh
 
 
+def _download_urls(store: ObjectStore | None, snippet: Snippet) -> list[str] | None:
+    """Presigned GET URL per chunk for a file-backed snippet, or None for
+    inline content. Raises 503 if the content is in R2 but R2 isn't wired."""
+    if snippet.storage_object_key is None:
+        return None
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="file storage is not configured",
+        )
+    return [
+        store.presign_get(f"{snippet.storage_object_key}/{i}")
+        for i in range(snippet.chunk_count or 0)
+    ]
+
+
 async def _burn_and_render(
-    session: AsyncSession, snippet_id: str
+    session: AsyncSession, snippet_id: str, store: ObjectStore | None
 ) -> GetSnippetResponse | JSONResponse:
     outcome = await _burn_cas(session, snippet_id)
     if isinstance(outcome, JSONResponse):
@@ -657,11 +674,13 @@ async def _burn_and_render(
         expires_at=fresh.expires_at,
         max_reads=fresh.max_reads,
         read_count=fresh.read_count,
+        chunk_count=fresh.chunk_count,
+        download_urls=_download_urls(store, fresh),
     )
 
 
 async def _burn_and_render_pin(
-    session: AsyncSession, snippet_id: str, key_vault: KeyVault
+    session: AsyncSession, snippet_id: str, key_vault: KeyVault, store: ObjectStore | None
 ) -> PinResolveResponse | JSONResponse:
     outcome = await _burn_cas(session, snippet_id)
     if isinstance(outcome, JSONResponse):
@@ -692,4 +711,6 @@ async def _burn_and_render_pin(
         expires_at=fresh.expires_at,
         max_reads=fresh.max_reads,
         read_count=fresh.read_count,
+        chunk_count=fresh.chunk_count,
+        download_urls=_download_urls(store, fresh),
     )

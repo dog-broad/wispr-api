@@ -167,3 +167,22 @@ async def test_file_finalize_503_when_store_unconfigured(db_client: AsyncClient)
     finally:
         _clear_store()
     assert resp.status_code == 503
+
+
+async def test_get_file_link_returns_presigned_download_urls(db_client: AsyncClient) -> None:
+    key = "files/dl123"
+    store = FakeStore({f"{key}/0": 1000, f"{key}/1": 1000})
+    _use_store(store)
+    try:
+        created = await db_client.post("/snippets", json=_file_link_body(key, 2))
+        assert created.status_code == 201, created.text
+        snippet_id = created.json()["id"]
+        got = await db_client.get(f"/snippets/{snippet_id}")
+    finally:
+        _clear_store()
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["ciphertext"] == ""  # file-backed: nothing inline
+    assert body["chunk_count"] == 2
+    assert len(body["download_urls"]) == 2
+    assert all("sig=get" in url for url in body["download_urls"])
