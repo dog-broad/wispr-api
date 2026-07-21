@@ -174,6 +174,24 @@ class CreateSyncResponse(BaseModel):
     id: str
 
 
+class SyncItem(BaseModel):
+    id: str
+    content_type: ContentType
+    ciphertext: Base64Field
+    wrapped_dek: Base64Field
+    wrapped_dek_iv: Base64Field
+    encrypted_metadata: Base64Field
+    size_bytes: int
+    created_at: datetime
+
+
+class SyncListResponse(BaseModel):
+    items: list[SyncItem]
+    # Keyset cursor: pass as ?before= to fetch the next (older) page. Null when
+    # this is the last page.
+    next_before: datetime | None = None
+
+
 class ByPinRequest(BaseModel):
     """Body for `POST /snippets/by-pin`. Resolves a 4-digit PIN to a Mode 2
     share (or signals a live Mode 3 pairing). ``password_hash`` is supplied on

@@ -65,3 +65,59 @@ async def test_sync_create_stores_wrapped_dek(
     # ZK invariants: no PIN, no key_version, no TTL/max_reads.
     assert snip.pin is None and snip.key_version is None
     assert snip.expires_at is None and snip.max_reads is None
+
+
+async def _create(client: AsyncClient, **overrides: Any) -> str:
+    resp = await client.post("/snippets", json=_sync_body(**overrides))
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+async def test_list_requires_auth(db_client: AsyncClient) -> None:
+    assert (await db_client.get("/me/snippets")).status_code == 401
+
+
+async def test_list_returns_own_sync_items_only(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    db_client.cookies.set("wispr_session", await _sign_in(db_session))
+    id_a = await _create(db_client)
+    id_b = await _create(db_client)
+    # An anonymous link must not appear in the Sync feed.
+    await db_client.post(
+        "/snippets",
+        json={
+            "share_mode": "link",
+            "content_type": "text",
+            "ciphertext": _b64(b"x"),
+            "encrypted_metadata": _b64(b"m"),
+            "ttl_seconds": 600,
+        },
+    )
+
+    resp = await db_client.get("/me/snippets")
+    assert resp.status_code == 200
+    body = resp.json()
+    ids = {item["id"] for item in body["items"]}
+    assert ids == {id_a, id_b}
+    assert body["next_before"] is None
+    # Each item carries the wrapped DEK for client-side unwrap.
+    assert all(item["wrapped_dek"] for item in body["items"])
+
+
+async def test_list_excludes_other_users(db_client: AsyncClient, db_session: AsyncSession) -> None:
+    db_client.cookies.set("wispr_session", await _sign_in(db_session))
+    await _create(db_client)
+    db_client.cookies.set("wispr_session", await _sign_in(db_session, email="other@example.com"))
+    resp = await db_client.get("/me/snippets")
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+
+
+async def test_burn_removes_from_feed(db_client: AsyncClient, db_session: AsyncSession) -> None:
+    db_client.cookies.set("wispr_session", await _sign_in(db_session))
+    snippet_id = await _create(db_client)
+    burn = await db_client.post(f"/me/snippets/{snippet_id}/burn")
+    assert burn.status_code == 204
+    resp = await db_client.get("/me/snippets")
+    assert resp.json()["items"] == []

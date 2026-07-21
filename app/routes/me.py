@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -14,7 +16,7 @@ from app.lib.auth import CurrentUser
 from app.lib.pairings import lookup_pairing
 from app.models.snippets import ShareMode, Snippet
 from app.redis_client import get_redis
-from app.schemas.snippets import RotatePinResponse
+from app.schemas.snippets import RotatePinResponse, SyncItem, SyncListResponse
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -22,6 +24,7 @@ DbSession = Annotated[AsyncSession, Depends(get_session)]
 RedisDep = Annotated[Redis, Depends(get_redis)]
 
 _PIN_RETRIES = 8
+_SYNC_PAGE_SIZE = 50
 
 
 async def _owned_pin_share(session: AsyncSession, snippet_id: str, user_id: object) -> Snippet:
@@ -74,18 +77,61 @@ async def rotate_pin(
     )
 
 
-@router.delete("/snippets/{snippet_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_snippet(
-    snippet_id: str,
+@router.get("/snippets", response_model=SyncListResponse)
+async def list_sync_snippets(
     user: CurrentUser,
     session: DbSession,
-) -> Response:
-    """Hard-delete a snippet the caller owns (PIN "delete now"; also the Sync
-    delete path). Owner mismatch / unknown id returns 404. Idempotent enough:
-    a second call after deletion is a 404."""
+    before: datetime | None = None,
+) -> SyncListResponse:
+    """The caller's Sync feed, newest first, 50/page. Keyset paginate by
+    passing the previous page's ``next_before`` as ``?before=``."""
+    stmt = select(Snippet).where(
+        Snippet.owner_user_id == user.id, Snippet.share_mode == ShareMode.sync
+    )
+    if before is not None:
+        stmt = stmt.where(Snippet.created_at < before)
+    stmt = stmt.order_by(Snippet.created_at.desc()).limit(_SYNC_PAGE_SIZE + 1)
+    rows = list(await session.scalars(stmt))
+
+    has_more = len(rows) > _SYNC_PAGE_SIZE
+    items = rows[:_SYNC_PAGE_SIZE]
+    return SyncListResponse(
+        items=[
+            SyncItem(
+                id=s.id,
+                content_type=s.content_type,
+                ciphertext=s.ciphertext_inline or b"",
+                wrapped_dek=s.wrapped_dek or b"",
+                wrapped_dek_iv=s.wrapped_dek_iv or b"",
+                encrypted_metadata=s.encrypted_metadata,
+                size_bytes=s.size_bytes,
+                created_at=s.created_at,
+            )
+            for s in items
+        ],
+        next_before=items[-1].created_at if (has_more and items) else None,
+    )
+
+
+async def _delete_owned(session: AsyncSession, snippet_id: str, user_id: uuid.UUID) -> None:
+    """Hard-delete a snippet the caller owns, or 404 (also masks existence
+    from non-owners). Idempotent: a second call after deletion is a 404."""
     snippet = await session.scalar(select(Snippet).where(Snippet.id == snippet_id))
-    if snippet is None or snippet.owner_user_id != user.id:
+    if snippet is None or snippet.owner_user_id != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     await session.execute(delete(Snippet).where(Snippet.id == snippet_id))
     await session.commit()
+
+
+@router.delete("/snippets/{snippet_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_snippet(snippet_id: str, user: CurrentUser, session: DbSession) -> Response:
+    """Hard-delete an owned snippet (Sync delete / PIN delete-now)."""
+    await _delete_owned(session, snippet_id, user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/snippets/{snippet_id}/burn", status_code=status.HTTP_204_NO_CONTENT)
+async def burn_snippet(snippet_id: str, user: CurrentUser, session: DbSession) -> Response:
+    """Alias of delete as a POST action — hard-delete an owned snippet now."""
+    await _delete_owned(session, snippet_id, user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
