@@ -186,6 +186,10 @@ class PairSignalResponse(BaseModel):
     mode: Literal["pair"] = "pair"
 
 
+class RotatePinResponse(BaseModel):
+    pin: str
+
+
 class VerifyPasswordRequest(BaseModel):
     """Body for `POST /snippets/{id}/verify-password`. The client has
     already computed PBKDF2 with the salt the server returned in the

@@ -34,7 +34,7 @@ async def _sign_in(db: AsyncSession, email: str = "member@example.com") -> str:
     user = User(email=email, auth_credential_hash=b"argon2-placeholder")
     db.add(user)
     await db.flush()
-    token = "test-session-token"
+    token = f"test-session-{email}"  # distinct per user so token_hash stays unique
     db.add(SessionRow(user_id=user.id, token_hash=hash_token(token), device_label="test"))
     await db.commit()
     return token
@@ -191,3 +191,35 @@ async def test_by_pin_turnstile_required_after_three_failures(
     gated = await db_client.post("/snippets/by-pin", json={"pin": "0000"})
     assert gated.status_code == 403
     assert gated.json()["reason"] == "turnstile_required"
+
+
+async def test_rotate_pin_changes_pin_keeps_content(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    snippet_id, old_pin = await _create_pin(db_client, db_session, max_reads=5)
+
+    resp = await db_client.post(f"/me/snippets/{snippet_id}/rotate-pin")
+
+    assert resp.status_code == 200
+    new_pin = resp.json()["pin"]
+    assert new_pin != old_pin and len(new_pin) == 4
+    # Old PIN stops resolving; the new one returns the same content.
+    assert (await db_client.post("/snippets/by-pin", json={"pin": old_pin})).status_code == 404
+    ok = await db_client.post("/snippets/by-pin", json={"pin": new_pin})
+    assert ok.status_code == 200 and ok.json()["mode"] == "pin_share"
+
+
+async def test_rotate_pin_requires_auth(db_client: AsyncClient, db_session: AsyncSession) -> None:
+    snippet_id, _pin = await _create_pin(db_client, db_session)
+    db_client.cookies.clear()
+    resp = await db_client.post(f"/me/snippets/{snippet_id}/rotate-pin")
+    assert resp.status_code == 401
+
+
+async def test_rotate_pin_non_owner_is_404(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    snippet_id, _pin = await _create_pin(db_client, db_session)
+    db_client.cookies.set("wispr_session", await _sign_in(db_session, email="other@example.com"))
+    resp = await db_client.post(f"/me/snippets/{snippet_id}/rotate-pin")
+    assert resp.status_code == 404
