@@ -160,9 +160,13 @@ pair_create_limit = rate_limit(_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW, "pair-cr
 # normalized address so one IP can't burn a stranger's budget and one address
 # can't be spammed from many IPs.
 _MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW = burst_per_period(10, "hour")
-magic_link_ip_limit = rate_limit(
-    _MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW, "magic-link-ip"
-)
+magic_link_ip_limit = rate_limit(_MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW, "magic-link-ip")
+# PIN redeem via /snippets/by-pin — 5/min and 30/hr per IP (§6/§12).
+_BY_PIN_MIN_BURST, _BY_PIN_MIN_WINDOW = burst_per_period(5, "minute")
+_BY_PIN_HR_BURST, _BY_PIN_HR_WINDOW = burst_per_period(30, "hour")
+by_pin_minute_limit = rate_limit(_BY_PIN_MIN_BURST, _BY_PIN_MIN_WINDOW, "by-pin-min")
+by_pin_hour_limit = rate_limit(_BY_PIN_HR_BURST, _BY_PIN_HR_WINDOW, "by-pin-hr")
+
 _MAGIC_LINK_EMAIL_BURST, _MAGIC_LINK_EMAIL_WINDOW = burst_per_period(3, "hour")
 
 
@@ -171,9 +175,7 @@ async def consume_magic_link_email(redis_client: Redis, email: str) -> TokenBuck
     caller can stay silent (still 200) on exhaustion rather than leaking that
     the address exists via a 429."""
     key = f"rl:magic-link-email:{email}"
-    return await consume_token(
-        redis_client, key, _MAGIC_LINK_EMAIL_BURST, _MAGIC_LINK_EMAIL_WINDOW
-    )
+    return await consume_token(redis_client, key, _MAGIC_LINK_EMAIL_BURST, _MAGIC_LINK_EMAIL_WINDOW)
 
 
 # Per-(IP, snippet) rate limit for password verification. PROJECT.md
@@ -191,9 +193,7 @@ async def verify_password_limit(
 ) -> None:
     ip = extract_client_ip(request)
     key = f"rl:verify-password:{snippet_id}:{bucket_key(ip)}"
-    result = await consume_token(
-        redis_client, key, _VERIFY_PASSWORD_BURST, _VERIFY_PASSWORD_WINDOW
-    )
+    result = await consume_token(redis_client, key, _VERIFY_PASSWORD_BURST, _VERIFY_PASSWORD_WINDOW)
     if not result.allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

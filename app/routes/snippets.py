@@ -5,29 +5,36 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.db import get_session
 from app.lib.auth import OptionalUser
+from app.lib.clientip import extract_client_ip
 from app.lib.ids import new_snippet_id
 from app.lib.keyvault import KeyVault, get_key_vault
 from app.lib.pairings import lookup_pairing
 from app.lib.ratelimit import (
+    by_pin_hour_limit,
+    by_pin_minute_limit,
     snippets_create_anon_limit,
     snippets_get_limit,
     verify_password_limit,
 )
+from app.lib.turnstile import verify_turnstile
 from app.lib.watch_bus import GoneEvent, ReadEvent
 from app.lib.watch_bus import bus as watch_bus
 from app.models.accounts import User
 from app.models.snippets import ShareMode, Snippet
 from app.redis_client import get_redis
 from app.schemas.snippets import (
+    ByPinRequest,
     CreateLinkSnippetRequest,
     CreatePinShareResponse,
     CreatePinShareSnippetRequest,
@@ -36,14 +43,49 @@ from app.schemas.snippets import (
     GetSnippetResponse,
     GoneReason,
     GoneResponse,
+    PairSignalResponse,
     PasswordRequiredResponse,
+    PinResolveResponse,
     VerifyPasswordRequest,
 )
 
 RedisDep = Annotated[Redis, Depends(get_redis)]
 KeyVaultDep = Annotated[KeyVault, Depends(get_key_vault)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 _PIN_RETRIES = 8
+
+# Turnstile kicks in after this many failed PIN attempts from one IP (§7.6.7 #15).
+_BY_PIN_TURNSTILE_AFTER = 3
+_BY_PIN_FAIL_TTL_SECONDS = 3600
+
+
+def _http_client(request: Request) -> httpx.AsyncClient:
+    client: httpx.AsyncClient = request.app.state.http_client
+    return client
+
+
+HttpClient = Annotated[httpx.AsyncClient, Depends(_http_client)]
+
+
+def _by_pin_fail_key(ip: str) -> str:
+    return f"bypin:fails:{ip}"
+
+
+async def _bypin_failures(redis_client: Redis, ip: str) -> int:
+    raw = await redis_client.get(_by_pin_fail_key(ip))
+    return int(raw) if raw is not None else 0
+
+
+async def _record_bypin_failure(redis_client: Redis, ip: str) -> None:
+    key = _by_pin_fail_key(ip)
+    await redis_client.incr(key)
+    await redis_client.expire(key, _BY_PIN_FAIL_TTL_SECONDS)
+
+
+async def _reset_bypin_failures(redis_client: Redis, ip: str) -> None:
+    await redis_client.delete(_by_pin_fail_key(ip))
+
 
 router = APIRouter(prefix="/snippets", tags=["snippets"])
 
@@ -166,6 +208,81 @@ async def _create_pin_share(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="could not allocate a PIN; try again",
     )
+
+
+@router.post(
+    "/by-pin",
+    response_model=None,
+    dependencies=[Depends(by_pin_minute_limit), Depends(by_pin_hour_limit)],
+)
+async def resolve_by_pin(
+    body: ByPinRequest,
+    request: Request,
+    session: DbSession,
+    redis_client: RedisDep,
+    key_vault: KeyVaultDep,
+    settings: SettingsDep,
+    http_client: HttpClient,
+) -> PinResolveResponse | PairSignalResponse | JSONResponse:
+    """Resolve a 4-digit PIN. A live Mode 3 pairing returns a pair signal; a
+    Mode 2 share returns its ciphertext + server-unwrapped content key (burning
+    a read). After 3 failed attempts from an IP a Turnstile token is required."""
+    ip = extract_client_ip(request)
+
+    if await _bypin_failures(redis_client, ip) >= _BY_PIN_TURNSTILE_AFTER:
+        if not body.turnstile_token:
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"reason": "turnstile_required"},
+            )
+        if not await verify_turnstile(
+            token=body.turnstile_token,
+            remote_ip=ip,
+            secret=settings.turnstile_secret_key,
+            client=http_client,
+        ):
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"reason": "turnstile_failed"},
+            )
+
+    # A live pairing takes the PIN namespace for its 60s window — signal pair.
+    if await lookup_pairing(redis_client, body.pin) is not None:
+        return PairSignalResponse()
+
+    snippet = await session.scalar(
+        select(Snippet).where(Snippet.pin == body.pin, Snippet.share_mode == ShareMode.pin_share)
+    )
+    if snippet is None:
+        await _record_bypin_failure(redis_client, ip)
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND, content={"reason": "unknown_pin"}
+        )
+
+    gone_reason = _gone_reason_or_none(snippet)
+    if gone_reason is not None:
+        return JSONResponse(
+            status_code=status.HTTP_410_GONE,
+            content=GoneResponse(reason=gone_reason).model_dump(mode="json"),
+        )
+
+    if snippet.password_hash is not None and snippet.password_salt is not None:
+        if body.password_hash is None:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content=PasswordRequiredResponse(password_salt=snippet.password_salt).model_dump(
+                    mode="json"
+                ),
+            )
+        if not hmac.compare_digest(snippet.password_hash, body.password_hash):
+            await _record_bypin_failure(redis_client, ip)
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"reason": "password_incorrect"},
+            )
+
+    await _reset_bypin_failures(redis_client, ip)
+    return await _burn_and_render_pin(session, snippet.id, key_vault)
 
 
 @router.get(
@@ -292,13 +409,10 @@ def _gone_reason_or_none(snippet: Snippet) -> GoneReason | None:
     return None
 
 
-async def _burn_and_render(
-    session: AsyncSession, snippet_id: str
-) -> GetSnippetResponse | JSONResponse:
-    """Atomic CAS: increment read_count only if the row is still
-    readable. Used by both the unprotected GET and the verify-password
-    success path so the burn semantics stay identical regardless of
-    which entry point landed the request."""
+async def _burn_cas(session: AsyncSession, snippet_id: str) -> Snippet | JSONResponse:
+    """Atomic CAS: increment read_count only if the row is still readable, then
+    return the freshly-loaded row (or a 410 gone response). Shared by the link
+    GET, verify-password, and by-pin paths so burn semantics stay identical."""
     update_stmt = text(
         """
         UPDATE snippets
@@ -313,21 +427,15 @@ async def _burn_and_render(
     result = await session.execute(update_stmt, {"id": snippet_id})
     updated_id = result.scalar_one_or_none()
 
-    # The raw SQL UPDATE just bypassed the ORM identity map. The session
-    # is configured with ``expire_on_commit=False``, so any Snippet
-    # instance the request already loaded (e.g. the password check at
-    # the top of the GET handler) would survive the commit below with
-    # its pre-bump ``read_count``. A later ``SELECT`` would then return
-    # that stale instance instead of re-hydrating from the post-update
-    # row, and the watch-bus ReadEvent + burn check downstream would
-    # both fire with stale numbers. Expire now so any re-load reflects
-    # the DB.
+    # The raw SQL UPDATE just bypassed the ORM identity map. The session is
+    # configured with ``expire_on_commit=False``, so any Snippet instance the
+    # request already loaded would survive the commit below with its pre-bump
+    # ``read_count``. Expire now so any re-load reflects the DB.
     session.expire_all()
 
     if updated_id is None:
-        # CAS failed between the load and the burn — race with another
-        # reader or with the purge job. Re-load to pick the most
-        # specific gone-reason.
+        # CAS failed between load and burn — race with another reader or the
+        # purge job. Re-load to pick the most specific gone-reason.
         existing = await _load_snippet(session, snippet_id)
         if existing is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -343,19 +451,63 @@ async def _burn_and_render(
         # Vanishingly rare — the purge ran between commit and re-read.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    # Notify any /ws/snippet/{id}/watch subscribers. Publish the read
-    # event first so live counters tick, then a gone event if this read
-    # also burned the snippet — watchers receive both in order.
+    # Notify any /ws/snippet/{id}/watch subscribers: read first (so live
+    # counters tick), then gone if this read also burned the snippet.
     await watch_bus.publish(
         ReadEvent(kind="read", snippet_id=fresh.id, read_count=fresh.read_count)
     )
     if fresh.max_reads is not None and fresh.read_count >= fresh.max_reads:
         await watch_bus.publish(GoneEvent(kind="gone", snippet_id=fresh.id, reason="burned"))
 
+    return fresh
+
+
+async def _burn_and_render(
+    session: AsyncSession, snippet_id: str
+) -> GetSnippetResponse | JSONResponse:
+    outcome = await _burn_cas(session, snippet_id)
+    if isinstance(outcome, JSONResponse):
+        return outcome
+    fresh = outcome
     return GetSnippetResponse(
         id=fresh.id,
         share_mode=fresh.share_mode,
         content_type=fresh.content_type,
+        ciphertext=fresh.ciphertext_inline or b"",
+        encrypted_metadata=fresh.encrypted_metadata,
+        size_bytes=fresh.size_bytes,
+        created_at=fresh.created_at,
+        expires_at=fresh.expires_at,
+        max_reads=fresh.max_reads,
+        read_count=fresh.read_count,
+    )
+
+
+async def _burn_and_render_pin(
+    session: AsyncSession, snippet_id: str, key_vault: KeyVault
+) -> PinResolveResponse | JSONResponse:
+    outcome = await _burn_cas(session, snippet_id)
+    if isinstance(outcome, JSONResponse):
+        return outcome
+    fresh = outcome
+    if (
+        fresh.encrypted_content_key is None
+        or fresh.content_key_iv is None
+        or fresh.key_version is None
+    ):
+        # A pin_share row is guaranteed these by CHECK constraint; treat a
+        # violation as a server fault rather than leaking a broken response.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="pin share is missing its wrapped key",
+        )
+    content_key = key_vault.unwrap(
+        fresh.encrypted_content_key, fresh.content_key_iv, fresh.key_version
+    )
+    return PinResolveResponse(
+        id=fresh.id,
+        content_type=fresh.content_type,
+        content_key=content_key,
         ciphertext=fresh.ciphertext_inline or b"",
         encrypted_metadata=fresh.encrypted_metadata,
         size_bytes=fresh.size_bytes,

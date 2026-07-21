@@ -149,6 +149,43 @@ class CreatePinShareResponse(BaseModel):
     expires_at: datetime
 
 
+class ByPinRequest(BaseModel):
+    """Body for `POST /snippets/by-pin`. Resolves a 4-digit PIN to a Mode 2
+    share (or signals a live Mode 3 pairing). ``password_hash`` is supplied on
+    the retry when a share is password-gated; ``turnstile_token`` after the
+    per-IP failure threshold."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pin: str = Field(..., pattern=r"^[0-9]{4}$")
+    password_hash: Base64Field | None = Field(default=None, max_length=PASSWORD_HASH_BYTES)
+    turnstile_token: str | None = None
+
+
+class PinResolveResponse(BaseModel):
+    """200 body for a resolved Mode 2 PIN. Carries the server-unwrapped content
+    key alongside the ciphertext — the client decrypts locally."""
+
+    mode: Literal["pin_share"] = "pin_share"
+    id: str
+    content_type: ContentType
+    content_key: Base64Field
+    ciphertext: Base64Field
+    encrypted_metadata: Base64Field
+    size_bytes: int
+    created_at: datetime
+    expires_at: datetime | None
+    max_reads: int | None
+    read_count: int
+
+
+class PairSignalResponse(BaseModel):
+    """200 body when the PIN matches a live Mode 3 pairing — the client opens
+    the pair WebSocket rather than fetching content."""
+
+    mode: Literal["pair"] = "pair"
+
+
 class VerifyPasswordRequest(BaseModel):
     """Body for `POST /snippets/{id}/verify-password`. The client has
     already computed PBKDF2 with the salt the server returned in the

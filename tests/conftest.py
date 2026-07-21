@@ -7,6 +7,7 @@ import sys
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 import redis as sync_redis
 from fastapi.testclient import TestClient
@@ -17,12 +18,26 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.lib.pair_signaling import registry as pair_signaling_registry
 from app.lib.ratelimit import (
+    by_pin_hour_limit,
+    by_pin_minute_limit,
     pair_create_limit,
     snippets_create_anon_limit,
     snippets_get_limit,
     verify_password_limit,
 )
 from app.main import app
+
+# Rate-limit deps stubbed out by the DB/redis-only clients so endpoint tests
+# focus on behaviour, not limits. Tests that exercise a limiter use the
+# rate_limit_client instead.
+_STUBBED_LIMITS = (
+    snippets_create_anon_limit,
+    snippets_get_limit,
+    pair_create_limit,
+    verify_password_limit,
+    by_pin_minute_limit,
+    by_pin_hour_limit,
+)
 
 _TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -116,19 +131,19 @@ async def db_client(db_session: AsyncSession, redis_client: Redis) -> AsyncItera
     behaviour; tests that exercise the limiter use `rate_limit_client`."""
     _ = db_session  # establish the dependency chain
     app.state.redis = redis_client
-    app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
-    app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
-    app.dependency_overrides[pair_create_limit] = _noop_rate_limit
-    app.dependency_overrides[verify_password_limit] = _noop_rate_limit
+    # The real lifespan (which sets this) doesn't run under ASGITransport, so
+    # provide the shared HTTP client that routes use for outbound calls.
+    app.state.http_client = httpx.AsyncClient()
+    for _limit in _STUBBED_LIMITS:
+        app.dependency_overrides[_limit] = _noop_rate_limit
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
     finally:
-        app.dependency_overrides.pop(snippets_create_anon_limit, None)
-        app.dependency_overrides.pop(snippets_get_limit, None)
-        app.dependency_overrides.pop(pair_create_limit, None)
-        app.dependency_overrides.pop(verify_password_limit, None)
+        await app.state.http_client.aclose()
+        for _limit in _STUBBED_LIMITS:
+            app.dependency_overrides.pop(_limit, None)
 
 
 @pytest.fixture
@@ -151,19 +166,15 @@ async def redis_only_client(redis_client: Redis) -> AsyncIterator[AsyncClient]:
     that never touch Postgres (e.g. /pair) so the test doesn't need the
     DB container running. Rate-limit deps are overridden to no-ops."""
     app.state.redis = redis_client
-    app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
-    app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
-    app.dependency_overrides[pair_create_limit] = _noop_rate_limit
-    app.dependency_overrides[verify_password_limit] = _noop_rate_limit
+    for _limit in _STUBBED_LIMITS:
+        app.dependency_overrides[_limit] = _noop_rate_limit
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
     finally:
-        app.dependency_overrides.pop(snippets_create_anon_limit, None)
-        app.dependency_overrides.pop(snippets_get_limit, None)
-        app.dependency_overrides.pop(pair_create_limit, None)
-        app.dependency_overrides.pop(verify_password_limit, None)
+        for _limit in _STUBBED_LIMITS:
+            app.dependency_overrides.pop(_limit, None)
 
 
 @pytest.fixture
@@ -238,9 +249,8 @@ def ws_client(ws_redis: sync_redis.Redis) -> Iterator[TestClient]:
     limiter). The in-process signaling registry is wiped between cases.
     """
     _ = ws_redis  # establish dependency order; ws_redis flushes first
-    app.dependency_overrides[snippets_create_anon_limit] = _noop_rate_limit
-    app.dependency_overrides[snippets_get_limit] = _noop_rate_limit
-    app.dependency_overrides[pair_create_limit] = _noop_rate_limit
+    for _limit in _STUBBED_LIMITS:
+        app.dependency_overrides[_limit] = _noop_rate_limit
     pair_signaling_registry.reset_for_tests()
     original_lifespan = app.router.lifespan_context
     app.router.lifespan_context = _redis_only_lifespan
@@ -249,7 +259,6 @@ def ws_client(ws_redis: sync_redis.Redis) -> Iterator[TestClient]:
             yield client
     finally:
         app.router.lifespan_context = original_lifespan
-        app.dependency_overrides.pop(snippets_create_anon_limit, None)
-        app.dependency_overrides.pop(snippets_get_limit, None)
-        app.dependency_overrides.pop(pair_create_limit, None)
+        for _limit in _STUBBED_LIMITS:
+            app.dependency_overrides.pop(_limit, None)
         pair_signaling_registry.reset_for_tests()
