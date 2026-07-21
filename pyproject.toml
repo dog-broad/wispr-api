@@ -15,6 +15,7 @@ dependencies = [
     "httpx>=0.28",
     "argon2-cffi>=23.1",
     "cryptography>=44",
+    "boto3>=1.35",
 ]
 
 [dependency-groups]
@@ -62,6 +63,10 @@ exclude = ["alembic/versions/"]
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
