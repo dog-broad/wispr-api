@@ -14,7 +14,7 @@ from app.lib.tokens import hash_token
 from app.main import app
 from app.models.accounts import Session as SessionRow
 from app.models.accounts import User
-from app.models.reports import Report, ReportReasonCategory
+from app.models.reports import Report, ReportReasonCategory, ReportResolution
 from app.models.snippets import ContentType, ShareMode, Snippet
 
 
@@ -195,3 +195,164 @@ async def test_report_hard_limited_five_per_hour(
     finally:
         app.dependency_overrides.pop(get_settings, None)
         await app.state.http_client.aclose()
+
+
+# --- admin review + takedown -------------------------------------------------
+
+
+async def _sign_in_admin(db: AsyncSession, email: str = "admin@example.com") -> tuple[User, str]:
+    user = User(email=email, auth_credential_hash=b"argon2-placeholder", is_admin=True)
+    db.add(user)
+    await db.flush()
+    token = f"admin-session-{email}"
+    db.add(SessionRow(user_id=user.id, token_hash=hash_token(token), device_label="admin"))
+    await db.commit()
+    return user, token
+
+
+async def _insert_report(
+    db: AsyncSession,
+    snippet_id: str | None,
+    *,
+    category: ReportReasonCategory = ReportReasonCategory.spam,
+    text: str | None = None,
+    reporter_user_id: object = None,
+) -> Report:
+    report = Report(
+        snippet_id=snippet_id,
+        reporter_ip="a" * 64,
+        reporter_user_id=reporter_user_id,
+        reason_category=category,
+        reason_text=text,
+    )
+    db.add(report)
+    await db.commit()
+    await db.refresh(report)
+    return report
+
+
+async def _create_pin_full(client: AsyncClient, db: AsyncSession) -> tuple[str, str]:
+    """Create a pin_share and return (id, pin)."""
+    _, token = await _sign_in(db)
+    client.cookies.set("wispr_session", token)
+    resp = await client.post("/snippets", json=_pin_body())
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    return str(body["id"]), str(body["pin"])
+
+
+async def test_admin_reports_requires_admin(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    assert (await db_client.get("/me/admin/reports")).status_code == 401
+    _, token = await _sign_in(db_session, email="plain@example.com")
+    db_client.cookies.set("wispr_session", token)
+    assert (await db_client.get("/me/admin/reports")).status_code == 403
+
+
+async def test_admin_lists_pending_reports_oldest_first(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    snippet_id = await _create_pin_share(db_client, db_session)
+    first = await _insert_report(db_session, snippet_id, category=ReportReasonCategory.spam)
+    await _insert_report(db_session, snippet_id, category=ReportReasonCategory.malware)
+    _, admin_token = await _sign_in_admin(db_session)
+    db_client.cookies.set("wispr_session", admin_token)
+
+    resp = await db_client.get("/me/admin/reports")
+
+    assert resp.status_code == 200
+    reports = resp.json()["reports"]
+    assert len(reports) == 2
+    assert reports[0]["id"] == str(first.id)  # oldest first
+    assert reports[0]["snippet_present"] is True
+    assert reports[0]["snippet_content_type"] == "text"
+    assert reports[0]["snippet_taken_down"] is False
+    assert reports[0]["from_member"] is False
+
+
+async def test_admin_resolve_takedown_sets_taken_down_and_renders_gone(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    snippet_id, pin = await _create_pin_full(db_client, db_session)
+    report = await _insert_report(db_session, snippet_id, category=ReportReasonCategory.illegal)
+    _, admin_token = await _sign_in_admin(db_session)
+    db_client.cookies.set("wispr_session", admin_token)
+
+    resolve = await db_client.post(
+        f"/me/admin/reports/{report.id}/resolve",
+        json={"resolution": "taken_down", "notes": "confirmed illegal"},
+    )
+
+    assert resolve.status_code == 200
+    assert resolve.json()["snippet_taken_down"] is True
+
+    db_session.expunge_all()
+    snip = await db_session.scalar(select(Snippet).where(Snippet.id == snippet_id))
+    assert snip is not None
+    assert snip.taken_down_at is not None
+    assert snip.taken_down_reason == "confirmed illegal"
+    saved = await db_session.scalar(select(Report).where(Report.id == report.id))
+    assert saved is not None
+    assert saved.resolved_at is not None
+    assert saved.resolution is ReportResolution.taken_down
+    assert saved.resolution_notes == "confirmed illegal"
+
+    # Receive now renders outcome #6: by-pin returns 410 gone taken_down.
+    db_client.cookies.clear()
+    gone = await db_client.post("/snippets/by-pin", json={"pin": pin})
+    assert gone.status_code == 410
+    assert gone.json()["reason"] == "taken_down"
+
+
+async def test_admin_resolve_dismiss_leaves_snippet_live(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    snippet_id, pin = await _create_pin_full(db_client, db_session)
+    report = await _insert_report(db_session, snippet_id)
+    _, admin_token = await _sign_in_admin(db_session)
+    db_client.cookies.set("wispr_session", admin_token)
+
+    resolve = await db_client.post(
+        f"/me/admin/reports/{report.id}/resolve", json={"resolution": "dismissed"}
+    )
+
+    assert resolve.status_code == 200
+    assert resolve.json()["snippet_taken_down"] is False
+
+    db_session.expunge_all()
+    snip = await db_session.scalar(select(Snippet).where(Snippet.id == snippet_id))
+    assert snip is not None and snip.taken_down_at is None
+
+    # The share still resolves normally.
+    db_client.cookies.clear()
+    ok = await db_client.post("/snippets/by-pin", json={"pin": pin})
+    assert ok.status_code == 200 and ok.json()["mode"] == "pin_share"
+
+
+async def test_admin_resolve_is_single_use(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    snippet_id = await _create_pin_share(db_client, db_session)
+    report = await _insert_report(db_session, snippet_id)
+    _, admin_token = await _sign_in_admin(db_session)
+    db_client.cookies.set("wispr_session", admin_token)
+
+    body = {"resolution": "dismissed"}
+    assert (
+        await db_client.post(f"/me/admin/reports/{report.id}/resolve", json=body)
+    ).status_code == 200
+    again = await db_client.post(f"/me/admin/reports/{report.id}/resolve", json=body)
+    assert again.status_code == 409
+
+
+async def test_admin_resolve_unknown_report_404(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    _, admin_token = await _sign_in_admin(db_session)
+    db_client.cookies.set("wispr_session", admin_token)
+    missing = "00000000-0000-0000-0000-000000000000"
+    resp = await db_client.post(
+        f"/me/admin/reports/{missing}/resolve", json={"resolution": "dismissed"}
+    )
+    assert resp.status_code == 404

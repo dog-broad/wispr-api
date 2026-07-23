@@ -109,6 +109,16 @@ async def current_user(user: OptionalUser) -> User:
 CurrentUser = Annotated[User, Depends(current_user)]
 
 
+async def admin_user(user: CurrentUser) -> User:
+    """Require an authenticated admin, or 403 (401 first if not signed in)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin only")
+    return user
+
+
+AdminUser = Annotated[User, Depends(admin_user)]
+
+
 def is_allowed_origin(origin: str, settings: Settings) -> bool:
     if origin in settings.cors_allowed_origins:
         return True
