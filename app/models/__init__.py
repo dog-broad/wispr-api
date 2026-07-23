@@ -12,6 +12,7 @@ from app.models.accounts import (
     Session,
     User,
 )
+from app.models.reports import Report, ReportReasonCategory, ReportResolution
 from app.models.snippets import ContentType, ShareMode, Snippet
 
 __all__ = [
@@ -21,6 +22,9 @@ __all__ = [
     "MagicLinkPurpose",
     "MagicLinkToken",
     "PassphraseLockout",
+    "Report",
+    "ReportReasonCategory",
+    "ReportResolution",
     "Session",
     "ShareMode",
     "Snippet",
