@@ -613,3 +613,77 @@ async def test_change_email_requires_auth(
         json={"new_email": "x@example.com", "current_auth_token": _CURRENT_TOKEN},
     )
     assert resp.status_code == 401
+
+
+# ---- delete account (M16) ----------------------------------------------------
+
+
+async def test_delete_account_wrong_passphrase_rejected(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    await _setup_alice(client, emails, db_session)
+
+    resp = await client.request(
+        "DELETE",
+        "/me/account",
+        json={"current_auth_token": base64.b64encode(b"\x09" * 32).decode()},
+    )
+
+    assert resp.status_code == 401
+    db_session.expunge_all()
+    user = await db_session.scalar(select(User).where(User.email == "alice@example.com"))
+    assert user is not None and user.deleted_at is None  # untouched
+
+
+async def test_delete_account_tombstones_and_purges(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    await _setup_alice(client, emails, db_session)
+    user = await db_session.scalar(select(User).where(User.email == "alice@example.com"))
+    assert user is not None
+    user_id = user.id
+    await _add_sync_snippet(db_session, user_id, "syncdel00001")
+    # An unused invite (revoked on delete) and a used one (kept).
+    invitee = await _seed_user(db_session, "invitee@example.com")
+    db_session.add(Invite(code="UNUSED01", created_by=user_id))
+    db_session.add(Invite(code="USED0002", created_by=user_id, used_by=invitee.id))
+    await db_session.commit()
+    emails.sent.clear()
+
+    resp = await client.request(
+        "DELETE", "/me/account", json={"current_auth_token": _CURRENT_TOKEN}
+    )
+
+    assert resp.status_code == 204
+    db_session.expunge_all()
+    # User row survives as a scrubbed tombstone; the address is freed.
+    tomb = await db_session.scalar(select(User).where(User.id == user_id))
+    assert tomb is not None
+    assert tomb.deleted_at is not None
+    assert tomb.email == f"deleted+{user_id}@invalid"
+    assert tomb.auth_credential_hash is None and tomb.master_key_salt is None
+    # Content is gone.
+    assert await db_session.scalar(select(func.count()).select_from(Snippet)) == 0
+    assert (
+        await db_session.scalar(
+            select(func.count()).select_from(Session).where(Session.user_id == user_id)
+        )
+        == 0
+    )
+    # Unused invite revoked; used invite kept.
+    assert (await db_session.scalar(select(Invite).where(Invite.code == "UNUSED01"))) is None
+    assert (await db_session.scalar(select(Invite).where(Invite.code == "USED0002"))) is not None
+    # Confirmation email to the original address.
+    assert any(m.to == "alice@example.com" and "deleted" in m.subject.lower() for m in emails.sent)
+
+
+async def test_delete_account_requires_auth(
+    auth_client: tuple[AsyncClient, _CapturingTransport],
+) -> None:
+    client, _ = auth_client
+    resp = await client.request(
+        "DELETE", "/me/account", json={"current_auth_token": _CURRENT_TOKEN}
+    )
+    assert resp.status_code == 401

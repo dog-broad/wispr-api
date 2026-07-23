@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -12,22 +13,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_session
-from app.lib.auth import SESSION_COOKIE_NAME, CurrentUser
+from app.lib.auth import SESSION_COOKIE_NAME, CurrentUser, clear_session_cookie
 from app.lib.clientip import extract_client_ip
 from app.lib.email import EmailMessage, EmailTransport, get_email_transport
 from app.lib.invites import generate_invite_code
 from app.lib.reauth import reauth
+from app.lib.storage import ObjectStoreDep
 from app.lib.tokens import generate_opaque_token, hash_token
 from app.models.accounts import (
     EmailChangeRequest,
     Invite,
     MagicLinkPurpose,
     MagicLinkToken,
+    PassphraseLockout,
     Session,
     User,
 )
+from app.models.snippets import Snippet
 from app.schemas.account import InviteResponse, OkResponse, SessionInfo, SessionListResponse
-from app.schemas.auth import ChangeEmailRequest
+from app.schemas.auth import ChangeEmailRequest, DeleteAccountRequest
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -180,6 +184,97 @@ async def _send_change_alert(
                 "The change only happens if the link sent to that address is "
                 "clicked. If this wasn't you, sign in and review your devices: "
                 f"{app_base_url}/me/settings"
+            ),
+        )
+    )
+
+
+@router.delete("/account", response_model=None)
+async def delete_account(
+    body: DeleteAccountRequest,
+    user: CurrentUser,
+    session: DbSession,
+    settings: SettingsDep,
+    background: BackgroundTasks,
+    email_transport: EmailDep,
+    store: ObjectStoreDep,
+) -> Response | JSONResponse:
+    """Permanently delete the account after re-auth. Hard-deletes all content
+    (snippets + R2 objects, sessions, magic-link tokens, email-change requests,
+    lockouts, and the user's unused invites) and soft-deletes the user row
+    (tombstone: deleted_at + scrubbed email + nulled credential), which frees
+    the address and keeps a target for future audit FKs. See [D-260723-02]."""
+    if user.auth_credential_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="set a passphrase before deleting your account",
+        )
+    now = datetime.now(tz=UTC)
+    outcome = await reauth(session, user, body.current_auth_token, settings.server_pepper, now)
+    if not outcome.ok:
+        await session.commit()
+        if outcome.send_email:
+            background.add_task(
+                _send_lockout_alert, email_transport, user.email, settings.app_base_url
+            )
+        reason = "locked" if outcome.locked else "wrong_passphrase"
+        code = status.HTTP_423_LOCKED if outcome.locked else status.HTTP_401_UNAUTHORIZED
+        return JSONResponse(status_code=code, content={"reason": reason}, background=background)
+
+    original_email = user.email
+    # Grab the R2 keys before the snippet rows go, to clean object storage after.
+    stored = (
+        await session.execute(
+            select(Snippet.storage_object_key, Snippet.chunk_count).where(
+                Snippet.owner_user_id == user.id, Snippet.storage_object_key.is_not(None)
+            )
+        )
+    ).all()
+
+    # One transaction: destroy content, revoke unused invites, tombstone the row.
+    await session.execute(delete(Snippet).where(Snippet.owner_user_id == user.id))
+    await session.execute(delete(Session).where(Session.user_id == user.id))
+    await session.execute(delete(EmailChangeRequest).where(EmailChangeRequest.user_id == user.id))
+    await session.execute(delete(MagicLinkToken).where(MagicLinkToken.user_id == user.id))
+    await session.execute(delete(PassphraseLockout).where(PassphraseLockout.user_id == user.id))
+    await session.execute(
+        delete(Invite).where(Invite.created_by == user.id, Invite.used_by.is_(None))
+    )
+    user.deleted_at = now
+    user.email = f"deleted+{user.id}@invalid"
+    user.auth_credential_hash = None
+    user.auth_credential_salt = None
+    user.master_key_salt = None
+    await session.commit()
+
+    if store is not None:
+        keys = [
+            f"{sok}/{i}"
+            for sok, chunk_count in stored
+            if sok is not None
+            for i in range(chunk_count or 0)
+        ]
+        if keys:
+            # Best-effort — the orphan janitor sweeps anything left behind.
+            with contextlib.suppress(Exception):
+                await store.delete_keys(keys)
+
+    background.add_task(_send_deleted_confirmation, email_transport, original_email)
+    response: Response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    clear_session_cookie(response, settings)
+    response.background = background
+    return response
+
+
+async def _send_deleted_confirmation(transport: EmailTransport, to: str) -> None:
+    await transport.send(
+        EmailMessage(
+            to=to,
+            subject="Your Wispr account was deleted",
+            text_body=(
+                "Your Wispr account and all its contents have been permanently "
+                "deleted. If you didn't do this, reply to this email.\n\n"
+                "Thanks for trying Wispr."
             ),
         )
     )

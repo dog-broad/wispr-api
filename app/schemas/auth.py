@@ -82,6 +82,12 @@ class UnlockRequest(BaseModel):
     auth_token: Base64Field = Field(..., max_length=64)
 
 
+class DeleteAccountRequest(BaseModel):
+    # Re-auth proof: the current passphrase's auth token. Deleting is permanent,
+    # so the session cookie alone isn't enough.
+    current_auth_token: Base64Field = Field(..., max_length=64)
+
+
 class RewrappedDek(BaseModel):
     id: str
     wrapped_dek: Base64Field = Field(..., max_length=WRAPPED_DEK_MAX_BYTES)
