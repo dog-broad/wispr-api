@@ -203,7 +203,7 @@ async def delete_account(
     (snippets + R2 objects, sessions, magic-link tokens, email-change requests,
     lockouts, and the user's unused invites) and soft-deletes the user row
     (tombstone: deleted_at + scrubbed email + nulled credential), which frees
-    the address and keeps a target for future audit FKs. See [D-260723-02]."""
+    the address and keeps a target for future audit FKs."""
     if user.auth_credential_hash is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
