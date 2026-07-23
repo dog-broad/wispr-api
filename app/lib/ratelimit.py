@@ -180,6 +180,15 @@ async def consume_magic_link_email(redis_client: Redis, email: str) -> TokenBuck
     return await consume_token(redis_client, key, _MAGIC_LINK_EMAIL_BURST, _MAGIC_LINK_EMAIL_WINDOW)
 
 
+# Data export — 3/day per user. Keyed by user id, not IP: exporting is a
+# per-account action, so a shared office IP shouldn't burn one user's budget.
+_EXPORT_BURST, _EXPORT_WINDOW = burst_per_period(3, "day")
+
+
+async def consume_export(redis_client: Redis, user_id: object) -> TokenBucketResult:
+    return await consume_token(redis_client, f"rl:export:{user_id}", _EXPORT_BURST, _EXPORT_WINDOW)
+
+
 # Per-(IP, snippet) rate limit for password verification. PROJECT.md
 # §12: 5/min/IP/snippet. The bucket key embeds the snippet id so a
 # rate-limited IP can still verify other snippets it has links to —

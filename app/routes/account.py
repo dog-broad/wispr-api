@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
+from redis.asyncio import Redis
 from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,8 @@ from app.lib.auth import SESSION_COOKIE_NAME, CurrentUser, clear_session_cookie
 from app.lib.clientip import extract_client_ip
 from app.lib.email import EmailMessage, EmailTransport, get_email_transport
 from app.lib.invites import generate_invite_code
+from app.lib.keyvault import KeyVault, get_key_vault
+from app.lib.ratelimit import consume_export
 from app.lib.reauth import reauth
 from app.lib.storage import ObjectStoreDep
 from app.lib.tokens import generate_opaque_token, hash_token
@@ -29,8 +32,17 @@ from app.models.accounts import (
     Session,
     User,
 )
-from app.models.snippets import Snippet
-from app.schemas.account import InviteResponse, OkResponse, SessionInfo, SessionListResponse
+from app.models.snippets import ShareMode, Snippet
+from app.redis_client import get_redis
+from app.schemas.account import (
+    ExportBundle,
+    ExportPinItem,
+    ExportSyncItem,
+    InviteResponse,
+    OkResponse,
+    SessionInfo,
+    SessionListResponse,
+)
 from app.schemas.auth import ChangeEmailRequest, DeleteAccountRequest
 
 router = APIRouter(prefix="/me", tags=["me"])
@@ -38,6 +50,8 @@ router = APIRouter(prefix="/me", tags=["me"])
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 EmailDep = Annotated[EmailTransport, Depends(get_email_transport)]
+RedisDep = Annotated[Redis, Depends(get_redis)]
+KeyVaultDep = Annotated[KeyVault, Depends(get_key_vault)]
 
 _INVITE_RETRIES = 8
 _EMAIL_CHANGE_TTL = timedelta(minutes=15)
@@ -291,6 +305,90 @@ async def _send_lockout_alert(transport: EmailTransport, to: str, app_base_url: 
                 f"your devices: {app_base_url}/me/settings"
             ),
         )
+    )
+
+
+@router.get("/export", response_model=ExportBundle)
+async def export_data(
+    user: CurrentUser,
+    session: DbSession,
+    redis_client: RedisDep,
+    key_vault: KeyVaultDep,
+) -> ExportBundle | JSONResponse:
+    """A full download of the caller's clips (Sync + owned PIN-shares), plus the
+    master-key salt so an offline decryptor can re-derive the KEK. File-backed
+    content ships as metadata + ``stored:true`` — its ciphertext lives in object
+    storage, not the bundle, and is re-downloadable while the service is up.
+    Limited to 3/day per user."""
+    budget = await consume_export(redis_client, user.id)
+    if not budget.allowed:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"reason": "rate_limited"},
+            headers={"Retry-After": str(budget.retry_after_seconds)},
+        )
+
+    rows = list(
+        await session.scalars(
+            select(Snippet)
+            .where(
+                Snippet.owner_user_id == user.id,
+                Snippet.share_mode.in_((ShareMode.sync, ShareMode.pin_share)),
+                Snippet.taken_down_at.is_(None),
+            )
+            .order_by(Snippet.created_at.desc())
+        )
+    )
+
+    sync: list[ExportSyncItem] = []
+    pins: list[ExportPinItem] = []
+    for row in rows:
+        is_stored = row.storage_object_key is not None
+        if row.share_mode is ShareMode.sync:
+            # These invariants hold for any well-formed sync row (CHECK-enforced
+            # on write); a violation means the row is corrupt, so skip it rather
+            # than emit an item the decryptor can't use.
+            if row.wrapped_dek is None or row.wrapped_dek_iv is None:
+                continue
+            sync.append(
+                ExportSyncItem(
+                    id=str(row.id),
+                    content_type=row.content_type,
+                    ciphertext=None if is_stored else row.ciphertext_inline,
+                    stored=is_stored,
+                    wrapped_dek=row.wrapped_dek,
+                    wrapped_dek_iv=row.wrapped_dek_iv,
+                    encrypted_metadata=row.encrypted_metadata,
+                    created_at=row.created_at,
+                )
+            )
+        else:  # pin_share
+            if (
+                row.encrypted_content_key is None
+                or row.content_key_iv is None
+                or row.key_version is None
+            ):
+                continue
+            content_key = key_vault.unwrap(
+                row.encrypted_content_key, row.content_key_iv, row.key_version
+            )
+            pins.append(
+                ExportPinItem(
+                    id=str(row.id),
+                    content_type=row.content_type,
+                    ciphertext=None if is_stored else row.ciphertext_inline,
+                    stored=is_stored,
+                    content_key=content_key,
+                    encrypted_metadata=row.encrypted_metadata,
+                    created_at=row.created_at,
+                )
+            )
+
+    return ExportBundle(
+        exported_at=datetime.now(tz=UTC),
+        master_key_salt=user.master_key_salt,
+        sync=sync,
+        pins=pins,
     )
 
 
