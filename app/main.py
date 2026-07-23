@@ -17,7 +17,18 @@ from app.lib.email import build_email_transport
 from app.lib.storage import build_object_store
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.redis_client import close_redis, open_redis
-from app.routes import auth, files, health, me, pair, pair_ws, snippet_watch, snippets, sync_ws
+from app.routes import (
+    account,
+    auth,
+    files,
+    health,
+    me,
+    pair,
+    pair_ws,
+    snippet_watch,
+    snippets,
+    sync_ws,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(me.router)
+    app.include_router(account.router)
     app.include_router(snippets.router)
     app.include_router(files.router)
     app.include_router(snippet_watch.router)
