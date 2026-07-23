@@ -22,3 +22,7 @@ class SessionListResponse(BaseModel):
 
 class InviteResponse(BaseModel):
     code: str
+
+
+class OkResponse(BaseModel):
+    ok: bool = True

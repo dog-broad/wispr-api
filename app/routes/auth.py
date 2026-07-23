@@ -31,7 +31,14 @@ from app.lib.lockout import is_locked, register_failure
 from app.lib.ratelimit import consume_magic_link_email, magic_link_ip_limit
 from app.lib.tokens import generate_opaque_token, hash_token
 from app.lib.turnstile import verify_turnstile
-from app.models.accounts import Invite, MagicLinkPurpose, MagicLinkToken, Session, User
+from app.models.accounts import (
+    EmailChangeRequest,
+    Invite,
+    MagicLinkPurpose,
+    MagicLinkToken,
+    Session,
+    User,
+)
 from app.models.snippets import ShareMode, Snippet
 from app.redis_client import get_redis
 from app.schemas.auth import (
@@ -190,13 +197,17 @@ async def verify(
 
     token_row.consumed_at = datetime.now(tz=UTC)
 
+    # An email-change link confirms a pending change and returns — it does not
+    # start a session (the user is already signed in on the device that
+    # requested it; the link only proves control of the new address).
+    if token_row.purpose is MagicLinkPurpose.change_email:
+        return await _apply_email_change(db, token_row)
+
     is_signin = token_row.purpose is MagicLinkPurpose.sign_in
     if is_signin:
         user = await _resolve_signin(db, token_row)
-    elif token_row.purpose is MagicLinkPurpose.sign_up:
-        user = await _redeem_signup(db, token_row)
     else:
-        raise NotImplementedError("change_email verification ships with the change-email flow")
+        user = await _redeem_signup(db, token_row)
 
     if user is None:
         return _invalid_link()
@@ -250,6 +261,54 @@ async def _send_signin_audit(
                 f"settings: {app_base_url}/me/settings"
             ),
         )
+    )
+
+
+def _email_taken() -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"reason": "email_taken"})
+
+
+async def _apply_email_change(db: AsyncSession, token_row: MagicLinkToken) -> Response:
+    """Confirm a pending email change: point the user's email at the new
+    address and mark the request complete. Re-checks uniqueness at confirm time
+    in case the address was claimed since the request. The old address was
+    already alerted when the change was requested."""
+    if token_row.user_id is None or token_row.new_email is None:
+        return _invalid_link()
+    user = await db.scalar(
+        select(User).where(User.id == token_row.user_id, User.deleted_at.is_(None))
+    )
+    if user is None:
+        return _invalid_link()
+
+    new_email = token_row.new_email
+    taken = await db.scalar(
+        select(User.id).where(
+            User.email == new_email, User.deleted_at.is_(None), User.id != user.id
+        )
+    )
+    if taken is not None:
+        return _email_taken()
+
+    user.email = new_email
+    request_row = await db.scalar(
+        select(EmailChangeRequest).where(EmailChangeRequest.magic_link_token_id == token_row.id)
+    )
+    if request_row is not None:
+        request_row.completed_at = datetime.now(tz=UTC)
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Lost a race for the address between the check and commit.
+        await db.rollback()
+        return _email_taken()
+
+    return JSONResponse(
+        content=VerifyResponse(
+            email=new_email,
+            needs_passphrase_setup=user.auth_credential_hash is None,
+            email_changed=True,
+        ).model_dump()
     )
 
 

@@ -114,7 +114,11 @@ async def test_signin_verify_sets_cookie_and_session(
     resp = await client.get("/auth/verify", params={"token": token})
 
     assert resp.status_code == 200
-    assert resp.json() == {"email": "alice@example.com", "needs_passphrase_setup": True}
+    assert resp.json() == {
+        "email": "alice@example.com",
+        "needs_passphrase_setup": True,
+        "email_changed": False,
+    }
     assert SESSION_COOKIE_NAME in resp.cookies
     assert await db_session.scalar(select(func.count()).select_from(Session)) == 1
     consumed = await db_session.scalar(select(MagicLinkToken))
@@ -501,4 +505,111 @@ async def test_change_passphrase_requires_auth(
 ) -> None:
     client, _ = auth_client
     resp = await client.post("/auth/change-passphrase", json=_change_body([]))
+    assert resp.status_code == 401
+
+
+# ---- change email (M15) ------------------------------------------------------
+
+
+def _confirm_token(emails: _CapturingTransport) -> str:
+    msg = next(m for m in emails.sent if "token=" in m.text_body)
+    return msg.text_body.split("token=", 1)[1].split()[0]
+
+
+async def _setup_alice(client: AsyncClient, emails: _CapturingTransport, db: AsyncSession) -> None:
+    await _seed_user(db, "alice@example.com")
+    await _sign_in(client, emails, "alice@example.com")
+    await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+
+
+async def test_change_email_requests_confirm_and_alerts_old(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    await _setup_alice(client, emails, db_session)
+    emails.sent.clear()
+
+    resp = await client.post(
+        "/me/change-email",
+        json={"new_email": "alice2@example.com", "current_auth_token": _CURRENT_TOKEN},
+    )
+
+    assert resp.status_code == 200, resp.text
+    # Email is NOT changed yet — only on confirm.
+    user = await db_session.scalar(select(User).where(User.email == "alice@example.com"))
+    assert user is not None
+    # A confirm link to the new address + an alert to the old one.
+    recipients = {m.to for m in emails.sent}
+    assert recipients == {"alice2@example.com", "alice@example.com"}
+    assert any("token=" in m.text_body for m in emails.sent if m.to == "alice2@example.com")
+
+
+async def test_change_email_confirm_applies_change(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    await _setup_alice(client, emails, db_session)
+    emails.sent.clear()
+    await client.post(
+        "/me/change-email",
+        json={"new_email": "alice2@example.com", "current_auth_token": _CURRENT_TOKEN},
+    )
+    token = _confirm_token(emails)
+
+    resp = await client.get("/auth/verify", params={"token": token})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["email"] == "alice2@example.com"
+    assert body["email_changed"] is True
+    db_session.expunge_all()
+    assert (
+        await db_session.scalar(select(User).where(User.email == "alice2@example.com"))
+    ) is not None
+    assert (await db_session.scalar(select(User).where(User.email == "alice@example.com"))) is None
+    # Link is single-use.
+    assert (await client.get("/auth/verify", params={"token": token})).status_code == 400
+
+
+async def test_change_email_wrong_passphrase_rejected(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    await _setup_alice(client, emails, db_session)
+    emails.sent.clear()
+
+    resp = await client.post(
+        "/me/change-email",
+        json={
+            "new_email": "alice2@example.com",
+            "current_auth_token": base64.b64encode(b"\x09" * 32).decode(),
+        },
+    )
+
+    assert resp.status_code == 401
+    assert emails.sent == []  # no confirm/alert sent on a failed re-auth
+
+
+async def test_change_email_rejects_taken_address(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    await _setup_alice(client, emails, db_session)
+    await _seed_user(db_session, "taken@example.com")
+
+    resp = await client.post(
+        "/me/change-email",
+        json={"new_email": "taken@example.com", "current_auth_token": _CURRENT_TOKEN},
+    )
+    assert resp.status_code == 409
+
+
+async def test_change_email_requires_auth(
+    auth_client: tuple[AsyncClient, _CapturingTransport],
+) -> None:
+    client, _ = auth_client
+    resp = await client.post(
+        "/me/change-email",
+        json={"new_email": "x@example.com", "current_auth_token": _CURRENT_TOKEN},
+    )
     assert resp.status_code == 401
