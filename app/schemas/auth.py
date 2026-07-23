@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.schemas.snippets import Base64Field
+from app.schemas.snippets import WRAP_IV_MAX_BYTES, WRAPPED_DEK_MAX_BYTES, Base64Field
+
+# Safety bound on a single change-passphrase request. A personal Sync history
+# won't approach this; it just caps a hostile request.
+MAX_REWRAP_ITEMS = 100_000
 
 # Minimal email validation without pulling in the email-validator dependency:
 # lowercase, strip, and require a single "@" with non-empty local and domain
@@ -60,6 +64,25 @@ class SessionResponse(BaseModel):
 
 class UnlockRequest(BaseModel):
     auth_token: Base64Field = Field(..., max_length=64)
+
+
+class RewrappedDek(BaseModel):
+    id: str
+    wrapped_dek: Base64Field = Field(..., max_length=WRAPPED_DEK_MAX_BYTES)
+    wrapped_dek_iv: Base64Field = Field(..., max_length=WRAP_IV_MAX_BYTES)
+
+
+class ChangePassphraseRequest(BaseModel):
+    # Re-auth proof: the auth token derived from the *current* passphrase.
+    current_auth_token: Base64Field = Field(..., max_length=64)
+    # New credential: token + both fresh PBKDF2 salts (the new master salt makes
+    # the old KEK unrecoverable, which is why the rewrap below must be complete).
+    new_auth_token: Base64Field = Field(..., max_length=64)
+    new_auth_credential_salt: Base64Field = Field(..., max_length=32)
+    new_master_key_salt: Base64Field = Field(..., max_length=32)
+    # Every owned Sync item's DEK, re-wrapped with the new KEK. Must cover the
+    # caller's exact current Sync set (server enforces) so nothing is stranded.
+    rewrapped: list[RewrappedDek] = Field(default_factory=list, max_length=MAX_REWRAP_ITEMS)
 
 
 class SetupPassphraseRequest(BaseModel):

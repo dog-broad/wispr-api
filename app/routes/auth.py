@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -32,8 +32,10 @@ from app.lib.ratelimit import consume_magic_link_email, magic_link_ip_limit
 from app.lib.tokens import generate_opaque_token, hash_token
 from app.lib.turnstile import verify_turnstile
 from app.models.accounts import Invite, MagicLinkPurpose, MagicLinkToken, Session, User
+from app.models.snippets import ShareMode, Snippet
 from app.redis_client import get_redis
 from app.schemas.auth import (
+    ChangePassphraseRequest,
     MagicLinkResponse,
     RequestMagicLinkRequest,
     SessionResponse,
@@ -369,6 +371,89 @@ async def setup_passphrase(
     user.auth_credential_hash = await run_in_threadpool(
         hash_auth_credential, body.auth_token, settings.server_pepper
     )
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/change-passphrase", status_code=status.HTTP_204_NO_CONTENT)
+async def change_passphrase(
+    body: ChangePassphraseRequest,
+    user: CurrentUser,
+    db: DbSession,
+    settings: SettingsDep,
+    background: BackgroundTasks,
+    email_transport: EmailDep,
+) -> Response:
+    """Change the passphrase in one atomic transaction: re-auth with the
+    current auth token, then swap both PBKDF2 salts + the argon2id credential,
+    bump ``master_key_version``, and replace every owned Sync item's
+    ``wrapped_dek`` with the client's re-wrapped value.
+
+    Changing ``master_key_salt`` makes the old KEK unrecoverable, so the rewrap
+    set must cover the caller's exact current Sync items (409 if it drifted) —
+    otherwise a missed item would be stranded undecryptable. Wrong current
+    passphrase counts toward the same lockout as unlock so this can't be used to
+    brute-force."""
+    if user.auth_credential_hash is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="passphrase not set")
+
+    now = datetime.now(tz=UTC)
+    if await is_locked(db, user.id, now):
+        return JSONResponse(status_code=status.HTTP_423_LOCKED, content={"reason": "locked"})
+
+    ok = await run_in_threadpool(
+        verify_auth_credential,
+        user.auth_credential_hash,
+        body.current_auth_token,
+        settings.server_pepper,
+    )
+    if not ok:
+        result = await register_failure(db, user.id, now)
+        await db.commit()
+        if result.send_email:
+            background.add_task(
+                _send_lockout_audit, email_transport, user.email, settings.app_base_url
+            )
+        reason = "locked" if result.locked else "wrong_passphrase"
+        code = status.HTTP_423_LOCKED if result.locked else status.HTTP_401_UNAUTHORIZED
+        return JSONResponse(status_code=code, content={"reason": reason}, background=background)
+
+    # The rewrap must be complete: after the salt swap the old KEK is gone, so
+    # any owned Sync item not re-wrapped here becomes permanently undecryptable.
+    owned_ids = set(
+        await db.scalars(
+            select(Snippet.id).where(
+                Snippet.owner_user_id == user.id, Snippet.share_mode == ShareMode.sync
+            )
+        )
+    )
+    provided_ids = {item.id for item in body.rewrapped}
+    if provided_ids != owned_ids:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="rewrap set does not match current sync items; refetch and retry",
+        )
+
+    for item in body.rewrapped:
+        await db.execute(
+            update(Snippet)
+            .where(
+                Snippet.id == item.id,
+                Snippet.owner_user_id == user.id,
+                Snippet.share_mode == ShareMode.sync,
+            )
+            .values(wrapped_dek=item.wrapped_dek, wrapped_dek_iv=item.wrapped_dek_iv)
+        )
+
+    user.auth_credential_salt = body.new_auth_credential_salt
+    user.master_key_salt = body.new_master_key_salt
+    user.auth_credential_hash = await run_in_threadpool(
+        hash_auth_credential, body.new_auth_token, settings.server_pepper
+    )
+    user.master_key_version += 1
+    await clear_lockout(db, user.id, now)
+    # Single commit: credential swap + version bump + all rewraps land together
+    # or not at all.
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

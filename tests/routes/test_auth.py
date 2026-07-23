@@ -16,6 +16,7 @@ from app.lib.email import EmailMessage, get_email_transport
 from app.lib.ratelimit import magic_link_ip_limit
 from app.main import app
 from app.models.accounts import Invite, MagicLinkToken, Session, User
+from app.models.snippets import ContentType, ShareMode, Snippet
 
 
 class _CapturingTransport:
@@ -365,3 +366,139 @@ async def test_logout_deletes_session_and_clears_cookie(
 
     assert resp.status_code == 204
     assert await db_session.scalar(select(func.count()).select_from(Session)) == 0
+
+
+# ---- change passphrase (M14) -------------------------------------------------
+
+_CURRENT_TOKEN = _SETUP_BODY["auth_token"]  # base64 of b"\x01" * 32
+_NEW_TOKEN = base64.b64encode(b"\x04" * 32).decode()
+_NEW_AUTH_SALT = base64.b64encode(b"\x05" * 16).decode()
+_NEW_MASTER_SALT = base64.b64encode(b"\x06" * 16).decode()
+
+
+async def _add_sync_snippet(db: AsyncSession, owner_id: object, snippet_id: str) -> None:
+    db.add(
+        Snippet(
+            id=snippet_id,
+            share_mode=ShareMode.sync,
+            content_type=ContentType.text,
+            encrypted_metadata=b"meta",
+            ciphertext_inline=b"ct",
+            size_bytes=2,
+            wrapped_dek=b"\xaa" * 48,
+            wrapped_dek_iv=b"\xbb" * 12,
+            owner_user_id=owner_id,
+        )
+    )
+    await db.commit()
+
+
+async def _setup_user_with_clips(
+    client: AsyncClient, emails: _CapturingTransport, db: AsyncSession, ids: list[str]
+) -> User:
+    await _seed_user(db, "alice@example.com")
+    await _sign_in(client, emails, "alice@example.com")
+    await client.post("/auth/setup-passphrase", json=_SETUP_BODY)
+    user = await db.scalar(select(User).where(User.email == "alice@example.com"))
+    assert user is not None
+    for sid in ids:
+        await _add_sync_snippet(db, user.id, sid)
+    return user
+
+
+def _rewrap(ids: list[str]) -> list[dict[str, str]]:
+    return [
+        {
+            "id": sid,
+            "wrapped_dek": base64.b64encode(b"\xcc" * 48).decode(),
+            "wrapped_dek_iv": base64.b64encode(b"\xdd" * 12).decode(),
+        }
+        for sid in ids
+    ]
+
+
+def _change_body(rewrapped: list[dict[str, str]]) -> dict[str, object]:
+    return {
+        "current_auth_token": _CURRENT_TOKEN,
+        "new_auth_token": _NEW_TOKEN,
+        "new_auth_credential_salt": _NEW_AUTH_SALT,
+        "new_master_key_salt": _NEW_MASTER_SALT,
+        "rewrapped": rewrapped,
+    }
+
+
+async def test_change_passphrase_rewraps_and_swaps_credential(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    ids = ["syncaaaaaaa1", "syncbbbbbbb2"]
+    await _setup_user_with_clips(client, emails, db_session, ids)
+
+    resp = await client.post("/auth/change-passphrase", json=_change_body(_rewrap(ids)))
+
+    assert resp.status_code == 204, resp.text
+    db_session.expunge_all()
+    user = await db_session.scalar(select(User).where(User.email == "alice@example.com"))
+    assert user is not None
+    assert user.auth_credential_salt == b"\x05" * 16
+    assert user.master_key_salt == b"\x06" * 16
+    assert user.master_key_version == 2  # bumped from 1
+    # Every sync DEK now carries the new wrapping.
+    for sid in ids:
+        snip = await db_session.scalar(select(Snippet).where(Snippet.id == sid))
+        assert snip is not None
+        assert snip.wrapped_dek == b"\xcc" * 48
+        assert snip.wrapped_dek_iv == b"\xdd" * 12
+        assert snip.ciphertext_inline == b"ct"  # ciphertext untouched
+
+    # New passphrase unlocks; old no longer does.
+    assert (await client.post("/auth/unlock", json={"auth_token": _NEW_TOKEN})).status_code == 204
+    assert (
+        await client.post("/auth/unlock", json={"auth_token": _CURRENT_TOKEN})
+    ).status_code == 401
+
+
+async def test_change_passphrase_wrong_current_rejected(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    ids = ["synccccccc01"]
+    await _setup_user_with_clips(client, emails, db_session, ids)
+    body = _change_body(_rewrap(ids))
+    body["current_auth_token"] = base64.b64encode(b"\x09" * 32).decode()
+
+    resp = await client.post("/auth/change-passphrase", json=body)
+
+    assert resp.status_code == 401
+    db_session.expunge_all()
+    user = await db_session.scalar(select(User).where(User.email == "alice@example.com"))
+    assert user is not None
+    assert user.master_key_version == 1  # unchanged
+    assert user.master_key_salt == b"\x03" * 16
+
+
+async def test_change_passphrase_incomplete_rewrap_set_rejected(
+    auth_client: tuple[AsyncClient, _CapturingTransport], db_session: AsyncSession
+) -> None:
+    client, emails = auth_client
+    ids = ["syncdddddd01", "syncdddddd02"]
+    await _setup_user_with_clips(client, emails, db_session, ids)
+    # Only rewrap one of the two owned sync items.
+    resp = await client.post("/auth/change-passphrase", json=_change_body(_rewrap(ids[:1])))
+
+    assert resp.status_code == 409
+    db_session.expunge_all()
+    user = await db_session.scalar(select(User).where(User.email == "alice@example.com"))
+    assert user is not None
+    assert user.master_key_version == 1  # nothing applied
+    snip = await db_session.scalar(select(Snippet).where(Snippet.id == ids[0]))
+    assert snip is not None
+    assert snip.wrapped_dek == b"\xaa" * 48  # original wrapping intact
+
+
+async def test_change_passphrase_requires_auth(
+    auth_client: tuple[AsyncClient, _CapturingTransport],
+) -> None:
+    client, _ = auth_client
+    resp = await client.post("/auth/change-passphrase", json=_change_body([]))
+    assert resp.status_code == 401
