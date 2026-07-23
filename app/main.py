@@ -25,6 +25,7 @@ from app.routes import (
     me,
     pair,
     pair_ws,
+    reports,
     snippet_watch,
     snippets,
     sync_ws,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(me.router)
     app.include_router(account.router)
     app.include_router(snippets.router)
+    app.include_router(reports.router)
     app.include_router(files.router)
     app.include_router(snippet_watch.router)
     app.include_router(pair.router)

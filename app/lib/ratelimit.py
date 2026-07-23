@@ -163,6 +163,11 @@ files_presign_limit = rate_limit(_SNIPPETS_CREATE_BURST, _SNIPPETS_CREATE_WINDOW
 # can't be spammed from many IPs.
 _MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW = burst_per_period(10, "hour")
 magic_link_ip_limit = rate_limit(_MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW, "magic-link-ip")
+# Public takedown reports — hard ceiling of 5/hr/IP. A separate hourly counter
+# in the route requires a Turnstile challenge above 3, so this bucket only ever
+# rejects the 6th report in an hour.
+_REPORTS_BURST, _REPORTS_WINDOW = burst_per_period(5, "hour")
+reports_limit = rate_limit(_REPORTS_BURST, _REPORTS_WINDOW, "reports")
 # PIN redeem via /snippets/by-pin — 5/min and 30/hr per IP (§6/§12).
 _BY_PIN_MIN_BURST, _BY_PIN_MIN_WINDOW = burst_per_period(5, "minute")
 _BY_PIN_HR_BURST, _BY_PIN_HR_WINDOW = burst_per_period(30, "hour")
