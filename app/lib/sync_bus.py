@@ -67,6 +67,12 @@ class SyncBus:
         finally:
             await self.unsubscribe(user_id, queue)
 
+    def connection_count(self) -> int:
+        """Best-effort snapshot of live /ws/sync connections (sum across users).
+        Lock-free for a cheap metric read; ``list()`` snapshots the values view
+        so a concurrent mutation can't raise mid-iteration."""
+        return sum(len(s) for s in list(self._subscribers.values()))
+
     def reset_for_tests(self) -> None:
         self._subscribers.clear()
 

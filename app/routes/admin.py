@@ -16,12 +16,14 @@ from app.lib.audit import (
     record_action,
 )
 from app.lib.auth import AdminUser
+from app.lib.dashboard import build_dashboard, build_quota_history
 from app.lib.killswitch import get_switch, set_switch
 from app.models.admin import KillSwitchName
 from app.models.reports import Report, ReportResolution
 from app.models.snippets import Snippet
 from app.redis_client import get_redis
 from app.schemas.admin import KillSwitchState, SetKillSwitchRequest
+from app.schemas.dashboard import DashboardResponse, QuotaHistoryResponse
 from app.schemas.reports import (
     AdminReportItem,
     AdminReportListResponse,
@@ -38,6 +40,33 @@ DbSession = Annotated[AsyncSession, Depends(get_session)]
 RedisDep = Annotated[Redis, Depends(get_redis)]
 
 _KILL_SWITCH_NAMES = frozenset(s.value for s in KillSwitchName)
+
+_DASHBOARD_CACHE_KEY = "admin:dashboard"
+_DASHBOARD_CACHE_TTL = 30
+
+
+@router.get("/dashboard", response_model=DashboardResponse)
+async def dashboard(
+    admin: AdminUser, session: DbSession, redis_client: RedisDep
+) -> DashboardResponse:
+    """Aggregated console payload, cached 30 s. Internal metrics are real;
+    provider/host metrics show a yellow '?' until their clients land."""
+    _ = admin
+    cached = await redis_client.get(_DASHBOARD_CACHE_KEY)
+    if cached is not None:
+        return DashboardResponse.model_validate_json(cached)
+    payload = await build_dashboard(session, redis_client)
+    await redis_client.set(_DASHBOARD_CACHE_KEY, payload.model_dump_json(), ex=_DASHBOARD_CACHE_TTL)
+    return payload
+
+
+@router.get("/quotas/{metric}/history", response_model=QuotaHistoryResponse)
+async def quota_history(metric: str, admin: AdminUser, session: DbSession) -> QuotaHistoryResponse:
+    """7-day daily series for a metric's drill-down. Derived on the fly for
+    DB-backed metrics (snippets, signups); provider metrics report no history
+    until a snapshot store exists."""
+    _ = admin
+    return await build_quota_history(session, metric)
 
 
 @router.get("/reports", response_model=AdminReportListResponse)

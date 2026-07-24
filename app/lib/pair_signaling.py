@@ -120,6 +120,11 @@ class PairSignalingRegistry:
         async with self._lock:
             return self._by_pin.pop(pin, None)
 
+    def active_count(self) -> int:
+        """Number of live signaling pairs (sender attached). Best-effort read
+        for the operator dashboard."""
+        return len(self._by_pin)
+
     def reset_for_tests(self) -> None:
         """Synchronous wipe used between tests to keep state-bleed out
         of the suite. Not safe to call against a running app."""
