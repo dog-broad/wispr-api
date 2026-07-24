@@ -26,7 +26,7 @@ from app.lib.audit import (
 )
 from app.lib.auth import AdminUser
 from app.lib.backup import create_backup
-from app.lib.dashboard import build_dashboard, build_quota_history
+from app.lib.dashboard import DASHBOARD_CACHE_KEY, build_quota_history, load_dashboard
 from app.lib.email import EmailMessage, EmailTransport, get_email_transport
 from app.lib.killswitch import get_switch, set_switch
 from app.lib.providers import CAPPED_QUOTA_KEYS
@@ -70,9 +70,6 @@ EmailDep = Annotated[EmailTransport, Depends(get_email_transport)]
 
 _KILL_SWITCH_NAMES = frozenset(s.value for s in KillSwitchName)
 
-_DASHBOARD_CACHE_KEY = "admin:dashboard"
-_DASHBOARD_CACHE_TTL = 30
-
 
 def _http_client(request: Request) -> httpx.AsyncClient:
     client: httpx.AsyncClient = request.app.state.http_client
@@ -85,17 +82,12 @@ async def dashboard(
     admin: AdminUser,
     session: DbSession,
     redis_client: RedisDep,
-    settings: Annotated[Settings, Depends(get_settings)],
+    settings: SettingsDep,
 ) -> DashboardResponse:
     """Aggregated console payload, cached 30 s. Internal metrics are real;
     provider metrics show a yellow '?' until their key is configured + reachable."""
     _ = admin
-    cached = await redis_client.get(_DASHBOARD_CACHE_KEY)
-    if cached is not None:
-        return DashboardResponse.model_validate_json(cached)
-    payload = await build_dashboard(session, redis_client, _http_client(request), settings)
-    await redis_client.set(_DASHBOARD_CACHE_KEY, payload.model_dump_json(), ex=_DASHBOARD_CACHE_TTL)
-    return payload
+    return await load_dashboard(session, redis_client, _http_client(request), settings)
 
 
 @router.get("/quotas/{metric}/history", response_model=QuotaHistoryResponse)
@@ -149,7 +141,7 @@ async def set_threshold(
         metadata={"warn_pct": body.warn_pct, "alert_pct": body.alert_pct},
     )
     await session.commit()
-    await redis_client.delete(_DASHBOARD_CACHE_KEY)
+    await redis_client.delete(DASHBOARD_CACHE_KEY)
     return ThresholdItem(metric=metric, warn_pct=body.warn_pct, alert_pct=body.alert_pct)
 
 

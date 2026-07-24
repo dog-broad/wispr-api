@@ -283,6 +283,24 @@ def _overall_status(metrics: list[Metric]) -> MetricStatus:
     return MetricStatus.ok
 
 
+DASHBOARD_CACHE_KEY = "admin:dashboard"
+DASHBOARD_CACHE_TTL = 30
+
+
+async def load_dashboard(
+    session: AsyncSession, redis: Redis, http_client: httpx.AsyncClient, settings: Settings
+) -> DashboardResponse:
+    """The dashboard payload, from the 30 s Redis cache or freshly built. Shared
+    by the HTTP endpoint and the /ws/admin push loop so both see the same
+    cadence."""
+    cached = await redis.get(DASHBOARD_CACHE_KEY)
+    if cached is not None:
+        return DashboardResponse.model_validate_json(cached)
+    payload = await build_dashboard(session, redis, http_client, settings)
+    await redis.set(DASHBOARD_CACHE_KEY, payload.model_dump_json(), ex=DASHBOARD_CACHE_TTL)
+    return payload
+
+
 async def build_dashboard(
     session: AsyncSession, redis: Redis, http_client: httpx.AsyncClient, settings: Settings
 ) -> DashboardResponse:

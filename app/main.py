@@ -20,6 +20,7 @@ from app.redis_client import close_redis, open_redis
 from app.routes import (
     account,
     admin,
+    admin_ws,
     auth,
     files,
     health,
@@ -113,6 +114,7 @@ def create_app() -> FastAPI:
     app.include_router(pair.router)
     app.include_router(pair_ws.router)
     app.include_router(sync_ws.router)
+    app.include_router(admin_ws.router)
 
     return app
 
