@@ -253,12 +253,16 @@ class CreateSyncResponse(BaseModel):
 class SyncItem(BaseModel):
     id: str
     content_type: ContentType
+    # Empty for a file-backed clip — its ciphertext lives in R2 as ``chunk_count``
+    # objects, fetched on demand via GET /me/snippets/{id}/file.
     ciphertext: Base64Field
     wrapped_dek: Base64Field
     wrapped_dek_iv: Base64Field
     encrypted_metadata: Base64Field
     size_bytes: int
     created_at: datetime
+    # Non-null iff the content is stored in R2 rather than inline.
+    chunk_count: int | None = None
 
 
 class SyncListResponse(BaseModel):
@@ -266,6 +270,13 @@ class SyncListResponse(BaseModel):
     # Keyset cursor: pass as ?before= to fetch the next (older) page. Null when
     # this is the last page.
     next_before: datetime | None = None
+
+
+class SyncFileUrlsResponse(BaseModel):
+    """Presigned GET URL per R2 chunk for a storage-backed Sync clip. The owner
+    fetches + decrypts these on demand (the DEK never leaves their tab)."""
+
+    download_urls: list[str]
 
 
 class ByPinRequest(BaseModel):

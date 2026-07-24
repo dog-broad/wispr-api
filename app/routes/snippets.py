@@ -367,6 +367,7 @@ async def _create_sync(
                     encrypted_metadata=snippet.encrypted_metadata,
                     size_bytes=snippet.size_bytes,
                     created_at=snippet.created_at,
+                    chunk_count=snippet.chunk_count,
                 ),
             )
         )

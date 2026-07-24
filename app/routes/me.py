@@ -14,11 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.lib.auth import CurrentUser
 from app.lib.pairings import lookup_pairing
+from app.lib.storage import ObjectStoreDep
 from app.lib.sync_bus import SnippetDeletedEvent
 from app.lib.sync_bus import bus as sync_bus
 from app.models.snippets import ShareMode, Snippet
 from app.redis_client import get_redis
-from app.schemas.snippets import RotatePinResponse, SyncItem, SyncListResponse
+from app.schemas.snippets import (
+    RotatePinResponse,
+    SyncFileUrlsResponse,
+    SyncItem,
+    SyncListResponse,
+)
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -108,10 +114,45 @@ async def list_sync_snippets(
                 encrypted_metadata=s.encrypted_metadata,
                 size_bytes=s.size_bytes,
                 created_at=s.created_at,
+                chunk_count=s.chunk_count,
             )
             for s in items
         ],
         next_before=items[-1].created_at if (has_more and items) else None,
+    )
+
+
+@router.get("/snippets/{snippet_id}/file", response_model=SyncFileUrlsResponse)
+async def sync_snippet_file_urls(
+    snippet_id: str,
+    user: CurrentUser,
+    session: DbSession,
+    store: ObjectStoreDep,
+) -> SyncFileUrlsResponse:
+    """Presigned GET URL per chunk for a storage-backed Sync clip the caller
+    owns. Fetched lazily on download so the feed doesn't eagerly pull every
+    file's bytes. 404 masks existence from non-owners; 400 for an inline clip
+    with nothing stored; 503 when R2 isn't configured."""
+    snippet = await session.scalar(select(Snippet).where(Snippet.id == snippet_id))
+    if (
+        snippet is None
+        or snippet.share_mode is not ShareMode.sync
+        or snippet.owner_user_id != user.id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if snippet.storage_object_key is None or snippet.chunk_count is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="clip is not file-backed"
+        )
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="file storage is not configured"
+        )
+    return SyncFileUrlsResponse(
+        download_urls=[
+            store.presign_get(f"{snippet.storage_object_key}/{i}")
+            for i in range(snippet.chunk_count)
+        ]
     )
 
 

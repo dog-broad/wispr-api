@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import uuid
 from typing import Any
 
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.lib.storage import get_object_store
 from app.lib.sync_bus import SnippetCreatedEvent, SnippetDeletedEvent
 from app.lib.sync_bus import bus as sync_bus
 from app.lib.tokens import hash_token
+from app.main import app
 from app.models.accounts import Session as SessionRow
 from app.models.accounts import User
-from app.models.snippets import ShareMode, Snippet
+from app.models.snippets import ContentType, ShareMode, Snippet
 
 
 async def _user_id(db: AsyncSession, email: str = "syncuser@example.com") -> str:
@@ -161,3 +164,84 @@ async def test_burn_publishes_deleted_event(
         assert event.snippet_id == snippet_id
     finally:
         await sync_bus.unsubscribe(uid, queue)
+
+
+# --- storage-backed (large-file) Sync clips ----------------------------------
+
+
+class _FakeStore:
+    """Presigns deterministic GET URLs so the file-URL endpoint is testable
+    without a bucket."""
+
+    def presign_get(self, key: str) -> str:
+        return f"https://r2.example/{key}?sig=get"
+
+
+async def _insert_sync_file(db: AsyncSession, owner_id: str, *, chunk_count: int = 3) -> str:
+    from app.lib.ids import new_snippet_id
+
+    snippet = Snippet(
+        id=new_snippet_id(),
+        share_mode=ShareMode.sync,
+        content_type=ContentType.file,
+        encrypted_metadata=b"meta",
+        ciphertext_inline=None,
+        storage_object_key="files/synctoken",
+        chunk_count=chunk_count,
+        size_bytes=3 * 1024 * 1024,
+        wrapped_dek=b"\x11" * 48,
+        wrapped_dek_iv=b"\x22" * 12,
+        owner_user_id=uuid.UUID(owner_id),
+    )
+    db.add(snippet)
+    await db.commit()
+    return snippet.id
+
+
+async def test_file_clip_carries_chunk_count_in_feed(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    db_client.cookies.set("wispr_session", await _sign_in(db_session))
+    file_id = await _insert_sync_file(db_session, await _user_id(db_session))
+
+    resp = await db_client.get("/me/snippets")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["items"] if i["id"] == file_id)
+    assert item["chunk_count"] == 3
+    assert item["ciphertext"] == ""  # bytes live in R2, not inline
+
+
+async def test_file_urls_owner_gets_presigned_gets(
+    db_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    db_client.cookies.set("wispr_session", await _sign_in(db_session))
+    file_id = await _insert_sync_file(db_session, await _user_id(db_session))
+    app.dependency_overrides[get_object_store] = lambda: _FakeStore()
+    try:
+        resp = await db_client.get(f"/me/snippets/{file_id}/file")
+    finally:
+        app.dependency_overrides.pop(get_object_store, None)
+    assert resp.status_code == 200
+    urls = resp.json()["download_urls"]
+    assert len(urls) == 3
+    assert urls[0].endswith("files/synctoken/0?sig=get")
+
+
+async def test_file_urls_non_owner_404(db_client: AsyncClient, db_session: AsyncSession) -> None:
+    owner_token = await _sign_in(db_session)
+    db_client.cookies.set("wispr_session", owner_token)
+    file_id = await _insert_sync_file(db_session, await _user_id(db_session))
+    # A different signed-in user must not learn the clip exists.
+    db_client.cookies.set("wispr_session", await _sign_in(db_session, email="other@example.com"))
+    assert (await db_client.get(f"/me/snippets/{file_id}/file")).status_code == 404
+
+
+async def test_file_urls_inline_clip_400(db_client: AsyncClient, db_session: AsyncSession) -> None:
+    db_client.cookies.set("wispr_session", await _sign_in(db_session))
+    inline_id = await _create(db_client)  # inline text clip, no storage
+    app.dependency_overrides[get_object_store] = lambda: _FakeStore()
+    try:
+        resp = await db_client.get(f"/me/snippets/{inline_id}/file")
+    finally:
+        app.dependency_overrides.pop(get_object_store, None)
+    assert resp.status_code == 400
