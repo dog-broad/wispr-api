@@ -27,6 +27,8 @@ class ObjectStore(Protocol):
     async def head_size(self, key: str) -> int | None: ...
     async def delete_keys(self, keys: list[str]) -> None: ...
     async def list_objects(self, prefix: str) -> list[tuple[str, datetime]]: ...
+    # Server-side upload (backups) — the browser uses presigned PUTs instead.
+    async def put_object(self, key: str, data: bytes) -> None: ...
 
 
 class R2Store:
@@ -87,6 +89,12 @@ class R2Store:
                 )
 
         await asyncio.to_thread(_delete)
+
+    async def put_object(self, key: str, data: bytes) -> None:
+        def _put() -> None:
+            self._client.put_object(Bucket=self._bucket, Key=key, Body=data)
+
+        await asyncio.to_thread(_put)
 
     async def list_objects(self, prefix: str) -> list[tuple[str, datetime]]:
         def _list() -> list[tuple[str, datetime]]:

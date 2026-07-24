@@ -13,6 +13,9 @@ ACTION_INVITE_ISSUED = "invite.issued"
 ACTION_SNIPPET_TAKEN_DOWN = "snippet.taken_down"
 ACTION_REPORT_DISMISSED = "report.dismissed"
 ACTION_THRESHOLD_UPDATED = "threshold.updated"
+ACTION_PURGE_RUN = "purge.run"
+ACTION_BACKUP_RUN = "backup.run"
+ACTION_BROADCAST_SENT = "broadcast.sent"
 
 
 async def record_action(

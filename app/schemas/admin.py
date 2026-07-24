@@ -68,3 +68,39 @@ class AlertPrefRequest(BaseModel):
 class AlertPrefResponse(BaseModel):
     metric: str
     enabled: bool
+
+
+# --- admin actions -----------------------------------------------------------
+
+# Broadcast subject/body caps — keep a runaway paste from becoming a giant send.
+BROADCAST_SUBJECT_MAX = 200
+BROADCAST_BODY_MAX = 10_000
+
+
+class PurgeResult(BaseModel):
+    deleted: int
+    swept_orphans: int
+
+
+class BackupResult(BaseModel):
+    key: str
+    size_bytes: int
+
+
+class BroadcastRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(min_length=1, max_length=BROADCAST_SUBJECT_MAX)
+    body: str = Field(min_length=1, max_length=BROADCAST_BODY_MAX)
+    # First call previews (no send, no re-auth). Set true — with the current
+    # passphrase's auth token — to actually send.
+    confirm: bool = False
+    current_auth_token: str | None = None
+
+
+class BroadcastResult(BaseModel):
+    # True for a preview (nothing sent); false once the send fired.
+    preview: bool
+    recipient_count: int
+    subject: str
+    sent: int

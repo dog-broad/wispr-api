@@ -1,27 +1,38 @@
 from __future__ import annotations
 
+import base64
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.db import get_session
+from app.db import async_session_maker, get_session
+from app.jobs.purge import purge_expired, sweep_orphans
 from app.lib.audit import (
+    ACTION_BACKUP_RUN,
+    ACTION_BROADCAST_SENT,
+    ACTION_PURGE_RUN,
     ACTION_REPORT_DISMISSED,
     ACTION_SNIPPET_TAKEN_DOWN,
     ACTION_THRESHOLD_UPDATED,
     record_action,
 )
 from app.lib.auth import AdminUser
+from app.lib.backup import create_backup
 from app.lib.dashboard import build_dashboard, build_quota_history
+from app.lib.email import EmailMessage, EmailTransport, get_email_transport
 from app.lib.killswitch import get_switch, set_switch
 from app.lib.providers import CAPPED_QUOTA_KEYS
+from app.lib.reauth import reauth
+from app.lib.storage import ObjectStoreDep
+from app.models.accounts import User
 from app.models.admin import AdminAlertPref, AdminThreshold, KillSwitchName
 from app.models.reports import Report, ReportResolution
 from app.models.snippets import Snippet
@@ -29,7 +40,11 @@ from app.redis_client import get_redis
 from app.schemas.admin import (
     AlertPrefRequest,
     AlertPrefResponse,
+    BackupResult,
+    BroadcastRequest,
+    BroadcastResult,
     KillSwitchState,
+    PurgeResult,
     SetKillSwitchRequest,
     SetThresholdRequest,
     ThresholdItem,
@@ -50,6 +65,8 @@ router = APIRouter(prefix="/me/admin", tags=["admin"])
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 RedisDep = Annotated[Redis, Depends(get_redis)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
+EmailDep = Annotated[EmailTransport, Depends(get_email_transport)]
 
 _KILL_SWITCH_NAMES = frozenset(s.value for s in KillSwitchName)
 
@@ -285,3 +302,126 @@ async def toggle_kill_switch(
         actor_id=admin.id,
     )
     return KillSwitchState(name=name, enabled=enabled, message=message)
+
+
+# --- actions -----------------------------------------------------------------
+
+
+@router.post("/actions/purge", response_model=PurgeResult)
+async def run_purge(admin: AdminUser, session: DbSession, store: ObjectStoreDep) -> PurgeResult:
+    """Run the expired-snippet purge + orphan sweep now, instead of waiting for
+    the next scheduled tick."""
+    deleted = await purge_expired(async_session_maker, store)
+    swept = await sweep_orphans(async_session_maker, store)
+    await record_action(
+        session,
+        actor_id=admin.id,
+        action=ACTION_PURGE_RUN,
+        metadata={"deleted": deleted, "swept_orphans": swept},
+    )
+    await session.commit()
+    return PurgeResult(deleted=deleted, swept_orphans=swept)
+
+
+@router.post("/actions/backup", response_model=BackupResult)
+async def run_backup(
+    admin: AdminUser, session: DbSession, store: ObjectStoreDep, settings: SettingsDep
+) -> BackupResult:
+    """Dump the database and upload it to R2 under ``backups/`` now."""
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="object storage not configured"
+        )
+    try:
+        key, size = await create_backup(store, settings.database_url)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"backup failed: {exc}"
+        ) from exc
+    await record_action(
+        session,
+        actor_id=admin.id,
+        action=ACTION_BACKUP_RUN,
+        target_type="backup",
+        target_id=key,
+        metadata={"size_bytes": size},
+    )
+    await session.commit()
+    return BackupResult(key=key, size_bytes=size)
+
+
+async def _send_lockout_alert(transport: EmailTransport, to: str, app_base_url: str) -> None:
+    await transport.send(
+        EmailMessage(
+            to=to,
+            subject="Your Wispr account was locked",
+            text_body=(
+                "Your Wispr account was locked for one hour after 10 failed "
+                "passphrase attempts.\n\nIf this wasn't you, sign in and review "
+                f"your devices: {app_base_url}/me/settings"
+            ),
+        )
+    )
+
+
+@router.post("/actions/broadcast-email", response_model=None)
+async def broadcast_email(
+    body: BroadcastRequest,
+    admin: AdminUser,
+    session: DbSession,
+    settings: SettingsDep,
+    email_transport: EmailDep,
+    background: BackgroundTasks,
+) -> BroadcastResult | JSONResponse:
+    """Email every live member. First call previews (no send, no re-auth); a
+    confirmed call re-auths with the current passphrase, then sends."""
+    recipient_count = (
+        await session.scalar(
+            select(func.count()).select_from(User).where(User.deleted_at.is_(None))
+        )
+    ) or 0
+
+    if not body.confirm:
+        return BroadcastResult(
+            preview=True, recipient_count=recipient_count, subject=body.subject, sent=0
+        )
+
+    if admin.auth_credential_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="set a passphrase before broadcasting"
+        )
+    if not body.current_auth_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="passphrase required to send"
+        )
+    now = datetime.now(tz=UTC)
+    outcome = await reauth(
+        session, admin, base64.b64decode(body.current_auth_token), settings.server_pepper, now
+    )
+    if not outcome.ok:
+        await session.commit()  # persist the failed-attempt / lockout counters
+        if outcome.send_email:
+            background.add_task(
+                _send_lockout_alert, email_transport, admin.email, settings.app_base_url
+            )
+        reason = "locked" if outcome.locked else "wrong_passphrase"
+        code = status.HTTP_423_LOCKED if outcome.locked else status.HTTP_401_UNAUTHORIZED
+        return JSONResponse(status_code=code, content={"reason": reason}, background=background)
+
+    emails = list(await session.scalars(select(User.email).where(User.deleted_at.is_(None))))
+    for address in emails:
+        background.add_task(
+            email_transport.send,
+            EmailMessage(to=address, subject=body.subject, text_body=body.body),
+        )
+    await record_action(
+        session,
+        actor_id=admin.id,
+        action=ACTION_BROADCAST_SENT,
+        metadata={"subject": body.subject, "recipient_count": len(emails)},
+    )
+    await session.commit()
+    response = BroadcastResult(
+        preview=False, recipient_count=len(emails), subject=body.subject, sent=len(emails)
+    )
+    return JSONResponse(content=response.model_dump(), background=background)
