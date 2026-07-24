@@ -293,6 +293,7 @@ async def toggle_kill_switch(
         message=body.message,
         actor_id=admin.id,
     )
+    await redis_client.delete(DASHBOARD_CACHE_KEY)  # ops panel reflects the toggle
     return KillSwitchState(name=name, enabled=enabled, message=message)
 
 
@@ -300,7 +301,9 @@ async def toggle_kill_switch(
 
 
 @router.post("/actions/purge", response_model=PurgeResult)
-async def run_purge(admin: AdminUser, session: DbSession, store: ObjectStoreDep) -> PurgeResult:
+async def run_purge(
+    admin: AdminUser, session: DbSession, store: ObjectStoreDep, redis_client: RedisDep
+) -> PurgeResult:
     """Run the expired-snippet purge + orphan sweep now, instead of waiting for
     the next scheduled tick."""
     deleted = await purge_expired(async_session_maker, store)
@@ -312,6 +315,7 @@ async def run_purge(admin: AdminUser, session: DbSession, store: ObjectStoreDep)
         metadata={"deleted": deleted, "swept_orphans": swept},
     )
     await session.commit()
+    await redis_client.delete(DASHBOARD_CACHE_KEY)  # counts changed
     return PurgeResult(deleted=deleted, swept_orphans=swept)
 
 
