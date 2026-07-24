@@ -12,13 +12,25 @@ from app.models.accounts import (
     Session,
     User,
 )
+from app.models.admin import (
+    AdminAlertPref,
+    AdminAuditLog,
+    AdminThreshold,
+    KillSwitch,
+    KillSwitchName,
+)
 from app.models.reports import Report, ReportReasonCategory, ReportResolution
 from app.models.snippets import ContentType, ShareMode, Snippet
 
 __all__ = [
+    "AdminAlertPref",
+    "AdminAuditLog",
+    "AdminThreshold",
     "ContentType",
     "EmailChangeRequest",
     "Invite",
+    "KillSwitch",
+    "KillSwitchName",
     "MagicLinkPurpose",
     "MagicLinkToken",
     "PassphraseLockout",
