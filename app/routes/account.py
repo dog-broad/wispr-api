@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_session
+from app.lib.audit import ACTION_INVITE_ISSUED, record_action
 from app.lib.auth import SESSION_COOKIE_NAME, CurrentUser, clear_session_cookie
 from app.lib.clientip import extract_client_ip
 from app.lib.email import EmailMessage, EmailTransport, get_email_transport
@@ -399,12 +400,22 @@ async def create_invite(user: CurrentUser, session: DbSession) -> InviteResponse
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin only")
     for _ in range(_INVITE_RETRIES):
         code = generate_invite_code()
-        session.add(Invite(code=code, created_by=user.id))
+        invite = Invite(code=code, created_by=user.id)
+        session.add(invite)
         try:
-            await session.commit()
+            await session.flush()  # assign the id + surface a code collision
         except IntegrityError:
             await session.rollback()
             continue
+        await record_action(
+            session,
+            actor_id=user.id,
+            action=ACTION_INVITE_ISSUED,
+            target_type="invite",
+            target_id=str(invite.id),
+            metadata={"code": code},
+        )
+        await session.commit()
         return InviteResponse(code=code)
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

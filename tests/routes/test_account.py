@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.lib.tokens import hash_token
 from app.models.accounts import Invite, User
 from app.models.accounts import Session as SessionRow
+from app.models.admin import AdminAuditLog
 from app.models.snippets import ContentType, ShareMode, Snippet
 
 
@@ -212,3 +213,11 @@ async def test_create_invite_mints_code(db_client: AsyncClient, db_session: Asyn
     assert row is not None
     assert row.created_by == admin.id
     assert row.used_by is None
+
+    # Issuing an invite is recorded in the admin audit log.
+    audit = await db_session.scalar(
+        select(AdminAuditLog).where(AdminAuditLog.action == "invite.issued")
+    )
+    assert audit is not None
+    assert audit.actor_user_id == admin.id
+    assert audit.target_type == "invite" and audit.payload["code"] == code

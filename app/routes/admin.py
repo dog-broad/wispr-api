@@ -9,6 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
+from app.lib.audit import (
+    ACTION_REPORT_DISMISSED,
+    ACTION_SNIPPET_TAKEN_DOWN,
+    record_action,
+)
 from app.lib.auth import AdminUser
 from app.models.reports import Report, ReportResolution
 from app.models.snippets import Snippet
@@ -94,6 +99,22 @@ async def resolve_report(
     report.resolved_by_user_id = admin.id
     report.resolution = body.resolution
     report.resolution_notes = body.notes
+    await record_action(
+        session,
+        actor_id=admin.id,
+        action=(
+            ACTION_SNIPPET_TAKEN_DOWN
+            if body.resolution is ReportResolution.taken_down
+            else ACTION_REPORT_DISMISSED
+        ),
+        target_type="snippet",
+        target_id=report.snippet_id,
+        metadata={
+            "report_id": str(report.id),
+            "resolution": body.resolution.value,
+            "notes": body.notes,
+        },
+    )
     await session.commit()
 
     return ResolveReportResponse(

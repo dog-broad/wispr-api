@@ -14,6 +14,7 @@ from app.lib.tokens import hash_token
 from app.main import app
 from app.models.accounts import Session as SessionRow
 from app.models.accounts import User
+from app.models.admin import AdminAuditLog
 from app.models.reports import Report, ReportReasonCategory, ReportResolution
 from app.models.snippets import ContentType, ShareMode, Snippet
 
@@ -298,6 +299,15 @@ async def test_admin_resolve_takedown_sets_taken_down_and_renders_gone(
     assert saved.resolution is ReportResolution.taken_down
     assert saved.resolution_notes == "confirmed illegal"
 
+    # The takedown is recorded in the admin audit log (same transaction).
+    audit = await db_session.scalar(
+        select(AdminAuditLog).where(AdminAuditLog.action == "snippet.taken_down")
+    )
+    assert audit is not None
+    assert audit.target_type == "snippet" and audit.target_id == snippet_id
+    assert audit.actor_user_id is not None
+    assert audit.payload["resolution"] == "taken_down"
+
     # Receive now renders outcome #6: by-pin returns 410 gone taken_down.
     db_client.cookies.clear()
     gone = await db_client.post("/snippets/by-pin", json={"pin": pin})
@@ -323,6 +333,12 @@ async def test_admin_resolve_dismiss_leaves_snippet_live(
     db_session.expunge_all()
     snip = await db_session.scalar(select(Snippet).where(Snippet.id == snippet_id))
     assert snip is not None and snip.taken_down_at is None
+
+    # A dismissal is audited too, but as report.dismissed (no takedown).
+    audit = await db_session.scalar(
+        select(AdminAuditLog).where(AdminAuditLog.action == "report.dismissed")
+    )
+    assert audit is not None and audit.payload["resolution"] == "dismissed"
 
     # The share still resolves normally.
     db_client.cookies.clear()
