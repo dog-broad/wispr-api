@@ -3,12 +3,15 @@ from __future__ import annotations
 import contextlib
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from redis.asyncio import Redis
 from sqlalchemy import Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.lib.killswitch import get_switch
 from app.lib.pair_signaling import registry
+from app.lib.providers import collect_quotas
 from app.lib.sync_bus import bus as sync_bus
 from app.models.accounts import PassphraseLockout, User
 from app.models.accounts import Session as SessionRow
@@ -22,14 +25,9 @@ from app.schemas.dashboard import (
     MetricStatus,
     QuotaHistoryPoint,
     QuotaHistoryResponse,
-    QuotaMetric,
 )
 
 _RECENT_ACTIONS = 20
-
-# Provider + host metrics not yet wired. Each shows a yellow "?" with this
-# reason until its client lands (a later console item). Never a false green.
-_PENDING = "provider integration pending"
 
 
 def _unknown(key: str, label: str, detail: str) -> Metric:
@@ -53,21 +51,6 @@ def _count_metric(
         return _unknown(key, label, "query failed")
     status = MetricStatus.warn if (warn_if_positive and value > 0) else MetricStatus.ok
     return Metric(key=key, label=label, status=status, value=str(value))
-
-
-def _quotas() -> list[QuotaMetric]:
-    # All provider quotas are unwired in this pass — each is a yellow "?".
-    return [
-        QuotaMetric(key=k, label=lbl, status=MetricStatus.unknown, detail=_PENDING)
-        for k, lbl in (
-            ("resend.monthly", "Resend"),
-            ("r2.storage", "R2 storage"),
-            ("r2.ops", "R2 ops"),
-            ("sentry.events", "Sentry"),
-            ("turnstile.today", "Turnstile"),
-            ("cf.dns", "CF DNS"),
-        )
-    ]
 
 
 async def _pg_conns(session: AsyncSession) -> int | None:
@@ -260,9 +243,11 @@ def _overall_status(metrics: list[Metric]) -> MetricStatus:
     return MetricStatus.ok
 
 
-async def build_dashboard(session: AsyncSession, redis: Redis) -> DashboardResponse:
+async def build_dashboard(
+    session: AsyncSession, redis: Redis, http_client: httpx.AsyncClient, settings: Settings
+) -> DashboardResponse:
     now = datetime.now(tz=UTC)
-    quotas = _quotas()
+    quotas = await collect_quotas(http_client, settings)
     health = await _health(session, redis)
     business = await _business(session, now)
     abuse = await _abuse(session, now)

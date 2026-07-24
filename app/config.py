@@ -97,6 +97,22 @@ class Settings(BaseSettings):
     # S3 API endpoint, e.g. https://<account>.r2.cloudflarestorage.com
     r2_endpoint: str | None = Field(default=None)
 
+    # Operator-console provider integrations. All unset in local dev — each
+    # dashboard quota row then renders a yellow "?" (never a false green). The
+    # clients degrade to "?" on missing config OR an unreachable/errored call.
+    # Sentry event-stats API (org + project slugs, an auth token with
+    # project:read).
+    sentry_api_token: str | None = Field(default=None)
+    sentry_org: str | None = Field(default=None)
+    sentry_project: str | None = Field(default=None)
+    # Cloudflare GraphQL Analytics (R2 storage/ops, DNS queries, Turnstile). The
+    # token needs Analytics read; account id scopes R2, zone id scopes DNS +
+    # Turnstile. (``r2_account_id`` above is the same account but kept separate
+    # so R2 storage can be configured without the analytics token.)
+    cloudflare_api_token: str | None = Field(default=None)
+    cloudflare_account_id: str | None = Field(default=None)
+    cloudflare_zone_id: str | None = Field(default=None)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

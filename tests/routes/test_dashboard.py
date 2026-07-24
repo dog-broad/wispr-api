@@ -1,14 +1,40 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.lib.ids import new_snippet_id
 from app.lib.tokens import hash_token
+from app.main import app
 from app.models.accounts import Session as SessionRow
 from app.models.accounts import User
 from app.models.reports import Report, ReportReasonCategory
 from app.models.snippets import ContentType, ShareMode, Snippet
+
+_NO_PROVIDER_KEYS = {
+    "resend_api_key": None,
+    "sentry_api_token": None,
+    "sentry_org": None,
+    "sentry_project": None,
+    "cloudflare_api_token": None,
+    "cloudflare_account_id": None,
+    "cloudflare_zone_id": None,
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_provider_calls() -> Iterator[None]:
+    """Null every provider key so the dashboard never makes a real external call
+    during tests — the quota rows stay unknown (their intended local state)."""
+    app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
+        update=_NO_PROVIDER_KEYS
+    )
+    yield
+    app.dependency_overrides.pop(get_settings, None)
 
 
 async def _sign_in(db: AsyncSession, email: str, *, is_admin: bool = False) -> str:

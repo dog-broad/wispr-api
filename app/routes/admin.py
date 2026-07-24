@@ -4,11 +4,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.db import get_session
 from app.lib.audit import (
     ACTION_REPORT_DISMISSED,
@@ -45,17 +47,26 @@ _DASHBOARD_CACHE_KEY = "admin:dashboard"
 _DASHBOARD_CACHE_TTL = 30
 
 
+def _http_client(request: Request) -> httpx.AsyncClient:
+    client: httpx.AsyncClient = request.app.state.http_client
+    return client
+
+
 @router.get("/dashboard", response_model=DashboardResponse)
 async def dashboard(
-    admin: AdminUser, session: DbSession, redis_client: RedisDep
+    request: Request,
+    admin: AdminUser,
+    session: DbSession,
+    redis_client: RedisDep,
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> DashboardResponse:
     """Aggregated console payload, cached 30 s. Internal metrics are real;
-    provider/host metrics show a yellow '?' until their clients land."""
+    provider metrics show a yellow '?' until their key is configured + reachable."""
     _ = admin
     cached = await redis_client.get(_DASHBOARD_CACHE_KEY)
     if cached is not None:
         return DashboardResponse.model_validate_json(cached)
-    payload = await build_dashboard(session, redis_client)
+    payload = await build_dashboard(session, redis_client, _http_client(request), settings)
     await redis_client.set(_DASHBOARD_CACHE_KEY, payload.model_dump_json(), ex=_DASHBOARD_CACHE_TTL)
     return payload
 
