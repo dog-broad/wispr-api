@@ -104,3 +104,10 @@ class BroadcastResult(BaseModel):
     recipient_count: int
     subject: str
     sent: int
+
+
+class RotateMasterKeyResult(BaseModel):
+    rewrapped: int
+    # Rows whose recorded version's key wasn't loaded (skipped, not corrupted).
+    failed: int
+    current_version: int

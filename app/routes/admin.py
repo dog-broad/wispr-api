@@ -18,6 +18,7 @@ from app.jobs.purge import purge_expired, sweep_orphans
 from app.lib.audit import (
     ACTION_BACKUP_RUN,
     ACTION_BROADCAST_SENT,
+    ACTION_MASTER_KEY_ROTATED,
     ACTION_PURGE_RUN,
     ACTION_REPORT_DISMISSED,
     ACTION_SNIPPET_TAKEN_DOWN,
@@ -28,6 +29,8 @@ from app.lib.auth import AdminUser
 from app.lib.backup import create_backup
 from app.lib.dashboard import DASHBOARD_CACHE_KEY, build_quota_history, load_dashboard
 from app.lib.email import EmailMessage, EmailTransport, get_email_transport
+from app.lib.keyrotation import rotate_master_key
+from app.lib.keyvault import get_key_vault
 from app.lib.killswitch import get_switch, set_switch
 from app.lib.providers import CAPPED_QUOTA_KEYS
 from app.lib.reauth import reauth
@@ -45,6 +48,7 @@ from app.schemas.admin import (
     BroadcastResult,
     KillSwitchState,
     PurgeResult,
+    RotateMasterKeyResult,
     SetKillSwitchRequest,
     SetThresholdRequest,
     ThresholdItem,
@@ -344,6 +348,30 @@ async def run_backup(
     )
     await session.commit()
     return BackupResult(key=key, size_bytes=size)
+
+
+@router.post("/actions/rotate-master-key", response_model=RotateMasterKeyResult)
+async def rotate_master_key_action(admin: AdminUser, session: DbSession) -> RotateMasterKeyResult:
+    """Re-wrap every Mode 2 content key that isn't at the key vault's current
+    version (the operator bumps the version via env + restart; this migrates the
+    stragglers). Resumable + batched; skipped rows are counted, not corrupted."""
+    outcome = await rotate_master_key(async_session_maker, get_key_vault())
+    await record_action(
+        session,
+        actor_id=admin.id,
+        action=ACTION_MASTER_KEY_ROTATED,
+        metadata={
+            "rewrapped": outcome.rewrapped,
+            "failed": outcome.failed,
+            "version": outcome.current_version,
+        },
+    )
+    await session.commit()
+    return RotateMasterKeyResult(
+        rewrapped=outcome.rewrapped,
+        failed=outcome.failed,
+        current_version=outcome.current_version,
+    )
 
 
 async def _send_lockout_alert(transport: EmailTransport, to: str, app_base_url: str) -> None:

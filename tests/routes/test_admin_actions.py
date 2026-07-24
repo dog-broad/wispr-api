@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,6 +14,7 @@ from app.lib import backup
 from app.lib.credentials import hash_auth_credential
 from app.lib.email import EmailMessage, get_email_transport
 from app.lib.ids import new_snippet_id
+from app.lib.keyvault import KeyVault
 from app.lib.storage import get_object_store
 from app.lib.tokens import hash_token
 from app.main import app
@@ -216,3 +218,53 @@ async def test_broadcast_wrong_passphrase_401(
     assert resp.status_code == 401
     assert resp.json()["reason"] == "wrong_passphrase"
     assert capture.sent == []
+
+
+# --- rotate master key -------------------------------------------------------
+
+
+async def test_rotate_master_key_rewraps_and_audits(
+    db_client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    k1, k2 = os.urandom(32), os.urandom(32)
+    v1 = KeyVault({1: k1}, current_version=1)
+    v2 = KeyVault({1: k1, 2: k2}, current_version=2)
+    monkeypatch.setattr("app.routes.admin.get_key_vault", lambda: v2)
+
+    # A member owns a v1-wrapped PIN share.
+    owner = User(email="owner@example.com", auth_credential_hash=b"x")
+    db_session.add(owner)
+    await db_session.flush()
+    ck = os.urandom(32)
+    wrapped, iv, _ = v1.wrap(ck)
+    sid = new_snippet_id()
+    db_session.add(
+        Snippet(
+            id=sid,
+            share_mode=ShareMode.pin_share,
+            content_type=ContentType.text,
+            encrypted_metadata=b"m",
+            ciphertext_inline=b"ct",
+            size_bytes=2,
+            pin="4242",
+            encrypted_content_key=wrapped,
+            content_key_iv=iv,
+            key_version=1,
+            owner_user_id=owner.id,
+        )
+    )
+    await db_session.commit()
+
+    db_client.cookies.set("wispr_session", await _admin(db_session, "boss2@example.com"))
+    resp = await db_client.post("/me/admin/actions/rotate-master-key")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"rewrapped": 1, "failed": 0, "current_version": 2}
+    db_session.expunge_all()
+    row = await db_session.scalar(select(Snippet).where(Snippet.id == sid))
+    assert row is not None and row.key_version == 2
+    assert v2.unwrap(row.encrypted_content_key or b"", row.content_key_iv or b"", 2) == ck
+    audit = await db_session.scalar(
+        select(AdminAuditLog).where(AdminAuditLog.action == "master_key.rotated")
+    )
+    assert audit is not None and audit.payload["rewrapped"] == 1

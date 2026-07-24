@@ -16,6 +16,7 @@ ACTION_THRESHOLD_UPDATED = "threshold.updated"
 ACTION_PURGE_RUN = "purge.run"
 ACTION_BACKUP_RUN = "backup.run"
 ACTION_BROADCAST_SENT = "broadcast.sent"
+ACTION_MASTER_KEY_ROTATED = "master_key.rotated"
 
 
 async def record_action(
