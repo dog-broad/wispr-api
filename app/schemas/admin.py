@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Public maintenance banner text cap.
 MESSAGE_MAX_LEN = 500
@@ -28,3 +30,41 @@ class MaintenanceState(BaseModel):
 
     enabled: bool
     message: str | None
+
+
+# --- thresholds + alert prefs ------------------------------------------------
+
+
+class ThresholdItem(BaseModel):
+    metric: str
+    warn_pct: int
+    alert_pct: int
+
+
+class ThresholdListResponse(BaseModel):
+    thresholds: list[ThresholdItem]
+
+
+class SetThresholdRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    warn_pct: int = Field(ge=0, le=100)
+    alert_pct: int = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Self:
+        if self.warn_pct > self.alert_pct:
+            raise ValueError("warn_pct must be <= alert_pct")
+        return self
+
+
+class AlertPrefRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str
+    enabled: bool
+
+
+class AlertPrefResponse(BaseModel):
+    metric: str
+    enabled: bool

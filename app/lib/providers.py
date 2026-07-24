@@ -18,6 +18,10 @@ _SENTRY_MONTHLY = 5_000
 _TIMEOUT = 8.0
 _GB = 1024**3
 
+# Quota rows with a cap — the only ones a warn/alert threshold can colour
+# (Turnstile + CF DNS have no cap; unknown rows have no value).
+CAPPED_QUOTA_KEYS = frozenset({"resend.monthly", "r2.storage", "r2.ops", "sentry.events"})
+
 # NOTE: the exact provider endpoints/response shapes below are best-effort
 # against the documented APIs and are validated live only when keys are
 # provisioned. Every call fails soft to a yellow "?" (see _unknown), so a wrong

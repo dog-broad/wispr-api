@@ -15,16 +15,26 @@ from app.db import get_session
 from app.lib.audit import (
     ACTION_REPORT_DISMISSED,
     ACTION_SNIPPET_TAKEN_DOWN,
+    ACTION_THRESHOLD_UPDATED,
     record_action,
 )
 from app.lib.auth import AdminUser
 from app.lib.dashboard import build_dashboard, build_quota_history
 from app.lib.killswitch import get_switch, set_switch
-from app.models.admin import KillSwitchName
+from app.lib.providers import CAPPED_QUOTA_KEYS
+from app.models.admin import AdminAlertPref, AdminThreshold, KillSwitchName
 from app.models.reports import Report, ReportResolution
 from app.models.snippets import Snippet
 from app.redis_client import get_redis
-from app.schemas.admin import KillSwitchState, SetKillSwitchRequest
+from app.schemas.admin import (
+    AlertPrefRequest,
+    AlertPrefResponse,
+    KillSwitchState,
+    SetKillSwitchRequest,
+    SetThresholdRequest,
+    ThresholdItem,
+    ThresholdListResponse,
+)
 from app.schemas.dashboard import DashboardResponse, QuotaHistoryResponse
 from app.schemas.reports import (
     AdminReportItem,
@@ -78,6 +88,73 @@ async def quota_history(metric: str, admin: AdminUser, session: DbSession) -> Qu
     until a snapshot store exists."""
     _ = admin
     return await build_quota_history(session, metric)
+
+
+@router.get("/thresholds", response_model=ThresholdListResponse)
+async def list_thresholds(admin: AdminUser, session: DbSession) -> ThresholdListResponse:
+    """Configured per-metric warn/alert thresholds. Metrics without a row use
+    the dashboard defaults."""
+    _ = admin
+    rows = list(await session.scalars(select(AdminThreshold).order_by(AdminThreshold.metric)))
+    return ThresholdListResponse(
+        thresholds=[
+            ThresholdItem(metric=t.metric, warn_pct=t.warn_pct, alert_pct=t.alert_pct) for t in rows
+        ]
+    )
+
+
+@router.put("/thresholds/{metric}", response_model=ThresholdItem)
+async def set_threshold(
+    metric: str,
+    body: SetThresholdRequest,
+    admin: AdminUser,
+    session: DbSession,
+    redis_client: RedisDep,
+) -> ThresholdItem:
+    """Set a capped quota's warn/alert percentages. Upserts, audits, and busts
+    the dashboard cache so the new colouring shows immediately."""
+    if metric not in CAPPED_QUOTA_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown metric")
+    row = await session.scalar(select(AdminThreshold).where(AdminThreshold.metric == metric))
+    if row is None:
+        row = AdminThreshold(metric=metric)
+        session.add(row)
+    row.warn_pct = body.warn_pct
+    row.alert_pct = body.alert_pct
+    row.updated_at = datetime.now(tz=UTC)
+    row.updated_by_user_id = admin.id
+    await record_action(
+        session,
+        actor_id=admin.id,
+        action=ACTION_THRESHOLD_UPDATED,
+        target_type="metric",
+        target_id=metric,
+        metadata={"warn_pct": body.warn_pct, "alert_pct": body.alert_pct},
+    )
+    await session.commit()
+    await redis_client.delete(_DASHBOARD_CACHE_KEY)
+    return ThresholdItem(metric=metric, warn_pct=body.warn_pct, alert_pct=body.alert_pct)
+
+
+@router.post("/alerts/preferences", response_model=AlertPrefResponse)
+async def set_alert_preference(
+    body: AlertPrefRequest, admin: AdminUser, session: DbSession
+) -> AlertPrefResponse:
+    """Opt this admin in/out of red-state email alerts for one metric. Personal
+    preference — upserted for the caller only, not audited."""
+    if body.metric not in CAPPED_QUOTA_KEYS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown metric")
+    row = await session.scalar(
+        select(AdminAlertPref).where(
+            AdminAlertPref.user_id == admin.id, AdminAlertPref.metric == body.metric
+        )
+    )
+    if row is None:
+        row = AdminAlertPref(user_id=admin.id, metric=body.metric)
+        session.add(row)
+    row.enabled = body.enabled
+    await session.commit()
+    return AlertPrefResponse(metric=body.metric, enabled=body.enabled)
 
 
 @router.get("/reports", response_model=AdminReportListResponse)

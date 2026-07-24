@@ -15,7 +15,7 @@ from app.lib.providers import collect_quotas
 from app.lib.sync_bus import bus as sync_bus
 from app.models.accounts import PassphraseLockout, User
 from app.models.accounts import Session as SessionRow
-from app.models.admin import AdminAuditLog, KillSwitchName
+from app.models.admin import AdminAuditLog, AdminThreshold, KillSwitchName
 from app.models.reports import Report
 from app.models.snippets import ShareMode, Snippet
 from app.schemas.dashboard import (
@@ -25,9 +25,14 @@ from app.schemas.dashboard import (
     MetricStatus,
     QuotaHistoryPoint,
     QuotaHistoryResponse,
+    QuotaMetric,
 )
 
 _RECENT_ACTIONS = 20
+
+# Default warn/alert percentages when a metric has no configured threshold.
+_DEFAULT_WARN_PCT = 75
+_DEFAULT_ALERT_PCT = 90
 
 
 def _unknown(key: str, label: str, detail: str) -> Metric:
@@ -232,6 +237,41 @@ async def _recent_actions(session: AsyncSession) -> list[AuditEntry]:
     ]
 
 
+async def _load_thresholds(session: AsyncSession) -> dict[str, tuple[int, int]]:
+    """Per-metric (warn_pct, alert_pct) overrides. Absent metrics use defaults."""
+    try:
+        rows = (
+            (
+                await session.execute(
+                    select(
+                        AdminThreshold.metric,
+                        AdminThreshold.warn_pct,
+                        AdminThreshold.alert_pct,
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+    except Exception:
+        return {}
+    return {metric: (warn, alert) for metric, warn, alert in rows}
+
+
+def _apply_thresholds(quotas: list[QuotaMetric], thresholds: dict[str, tuple[int, int]]) -> None:
+    """Colour capped quota rows by their used/total percentage. Unknown rows and
+    rows with no cap are left as-is."""
+    for quota in quotas:
+        if quota.status is not MetricStatus.ok or quota.used is None or not quota.total:
+            continue
+        warn_pct, alert_pct = thresholds.get(quota.key, (_DEFAULT_WARN_PCT, _DEFAULT_ALERT_PCT))
+        pct = quota.used / quota.total * 100
+        if pct >= alert_pct:
+            quota.status = MetricStatus.alert
+        elif pct >= warn_pct:
+            quota.status = MetricStatus.warn
+
+
 def _overall_status(metrics: list[Metric]) -> MetricStatus:
     """Banner status: worst of alert > warn > ok. ``unknown`` is informational
     (a per-metric yellow "?") and never flips the banner."""
@@ -248,6 +288,7 @@ async def build_dashboard(
 ) -> DashboardResponse:
     now = datetime.now(tz=UTC)
     quotas = await collect_quotas(http_client, settings)
+    _apply_thresholds(quotas, await _load_thresholds(session))
     health = await _health(session, redis)
     business = await _business(session, now)
     abuse = await _abuse(session, now)

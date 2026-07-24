@@ -12,6 +12,7 @@ from app.models.admin import AdminAuditLog
 ACTION_INVITE_ISSUED = "invite.issued"
 ACTION_SNIPPET_TAKEN_DOWN = "snippet.taken_down"
 ACTION_REPORT_DISMISSED = "report.dismissed"
+ACTION_THRESHOLD_UPDATED = "threshold.updated"
 
 
 async def record_action(
