@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import async_session_maker
+from app.jobs.alerts import run_alert_poll_loop
 from app.jobs.purge import run_purge_loop
 from app.lib.email import build_email_transport
 from app.lib.storage import build_object_store
@@ -59,17 +60,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ),
         name="purge-loop",
     )
+    alert_task = asyncio.create_task(
+        run_alert_poll_loop(
+            async_session_maker,
+            app.state.redis,
+            app.state.http_client,
+            settings,
+            app.state.email_transport,
+            settings.alert_poll_interval_seconds,
+            stop_event,
+        ),
+        name="alert-poll-loop",
+    )
     try:
         yield
     finally:
         stop_event.set()
-        try:
-            await asyncio.wait_for(purge_task, timeout=10)
-        except TimeoutError:
-            logger.warning("purge: shutdown timeout, cancelling")
-            purge_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await purge_task
+        for task, label in ((purge_task, "purge"), (alert_task, "alerts")):
+            try:
+                await asyncio.wait_for(task, timeout=10)
+            except TimeoutError:
+                logger.warning("%s: shutdown timeout, cancelling", label)
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         await app.state.http_client.aclose()
         await close_redis(app.state.redis)
 

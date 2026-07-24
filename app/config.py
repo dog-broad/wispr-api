@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # observe a purge tick without waiting (or to disable entirely with 0).
     purge_interval_seconds: int = Field(default=300, ge=0)
 
+    # Operator-console poll: every N seconds the backend builds the dashboard,
+    # warms its Redis cache, and emails any red-state alerts. 0 disables the loop.
+    alert_poll_interval_seconds: int = Field(default=30, ge=0)
+
     # Transactional email (magic links, audit + confirmation notices). When
     # ``resend_api_key`` is unset the app falls back to a log-only transport
     # that writes the message (link included) to the app log, so the auth flow
