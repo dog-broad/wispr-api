@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,8 +16,12 @@ from app.lib.audit import (
     record_action,
 )
 from app.lib.auth import AdminUser
+from app.lib.killswitch import get_switch, set_switch
+from app.models.admin import KillSwitchName
 from app.models.reports import Report, ReportResolution
 from app.models.snippets import Snippet
+from app.redis_client import get_redis
+from app.schemas.admin import KillSwitchState, SetKillSwitchRequest
 from app.schemas.reports import (
     AdminReportItem,
     AdminReportListResponse,
@@ -30,6 +35,9 @@ from app.schemas.reports import (
 router = APIRouter(prefix="/me/admin", tags=["admin"])
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
+RedisDep = Annotated[Redis, Depends(get_redis)]
+
+_KILL_SWITCH_NAMES = frozenset(s.value for s in KillSwitchName)
 
 
 @router.get("/reports", response_model=AdminReportListResponse)
@@ -123,3 +131,40 @@ async def resolve_report(
         resolved_at=now,
         snippet_taken_down=took_down,
     )
+
+
+def _valid_switch(name: str) -> str:
+    if name not in _KILL_SWITCH_NAMES:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown kill switch")
+    return name
+
+
+@router.get("/kill-switch/{name}", response_model=KillSwitchState)
+async def read_kill_switch(
+    name: str, admin: AdminUser, session: DbSession, redis_client: RedisDep
+) -> KillSwitchState:
+    """Current state of one kill switch (off if never toggled)."""
+    _ = admin
+    enabled, message = await get_switch(redis_client, session, _valid_switch(name))
+    return KillSwitchState(name=name, enabled=enabled, message=message)
+
+
+@router.post("/kill-switch/{name}", response_model=KillSwitchState)
+async def toggle_kill_switch(
+    name: str,
+    body: SetKillSwitchRequest,
+    admin: AdminUser,
+    session: DbSession,
+    redis_client: RedisDep,
+) -> KillSwitchState:
+    """Toggle a feature kill switch. Persists, busts the 30 s cache, and logs
+    the change. ``message`` is the public banner text for ``maintenance_mode``."""
+    enabled, message = await set_switch(
+        session,
+        redis_client,
+        name=_valid_switch(name),
+        enabled=body.enabled,
+        message=body.message,
+        actor_id=admin.id,
+    )
+    return KillSwitchState(name=name, enabled=enabled, message=message)

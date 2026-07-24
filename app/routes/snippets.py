@@ -19,6 +19,7 @@ from app.lib.auth import OptionalUser
 from app.lib.clientip import extract_client_ip
 from app.lib.ids import new_snippet_id
 from app.lib.keyvault import KeyVault, get_key_vault
+from app.lib.killswitch import is_enabled
 from app.lib.pairings import lookup_pairing
 from app.lib.ratelimit import (
     by_pin_hour_limit,
@@ -143,10 +144,12 @@ async def create_snippet(
     redis_client: RedisDep,
     key_vault: KeyVaultDep,
     store: ObjectStoreDep,
-) -> CreateSnippetResponse | CreatePinShareResponse | CreateSyncResponse:
+) -> CreateSnippetResponse | CreatePinShareResponse | CreateSyncResponse | JSONResponse:
     """Create a snippet. Link shares are anonymous; PIN and Sync are
     members-only (the discriminated body routes here either way)."""
     if isinstance(body, CreatePinShareSnippetRequest):
+        if await is_enabled(redis_client, session, "mode2"):
+            return _feature_disabled()
         if user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="sign in to share by PIN"
@@ -158,7 +161,18 @@ async def create_snippet(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="sign in to save clips"
             )
         return await _create_sync(session, store, user, body)
+    if await is_enabled(redis_client, session, "anon_link"):
+        return _feature_disabled()
     return await _create_link(session, store, body)
+
+
+def _feature_disabled() -> JSONResponse:
+    """503 for a create paused by a kill switch. The client surfaces a plain
+    'temporarily unavailable' message; existing shares are unaffected."""
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"reason": "feature_disabled"},
+    )
 
 
 class _ResolvedContent:
