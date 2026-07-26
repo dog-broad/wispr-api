@@ -22,6 +22,12 @@ services:
       context: .
       target: prod
     restart: unless-stopped
+    # The prod image bakes in the source and drops the bind-mount, so the
+    # app can't read a .env off disk the way it does in dev. Inject the
+    # deployment secrets (pepper, key vault, Resend, Turnstile, R2, cookie
+    # scope, base URL) as real environment variables instead.
+    env_file:
+      - .env
     # !reset wipes the inherited list from docker-compose.yml; bare
     # `ports: []` would only APPEND nothing, which leaves the dev
     # 8000:8000 binding in place. Same applies to volumes — we drop

@@ -20,7 +20,7 @@ _HEADERS: dict[str, str] = {
         "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob:; "
-        "connect-src 'self' wss://api.wispr.rushyendra.dev https://api.wispr.rushyendra.dev; "
+        "connect-src 'self' wss://wispr-api.rushyendra.dev https://wispr-api.rushyendra.dev; "
         "frame-ancestors 'none'; "
         "base-uri 'self'; "
         "form-action 'self'; "
