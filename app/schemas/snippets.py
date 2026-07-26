@@ -46,6 +46,37 @@ Base64Field = Annotated[
 MAX_CIPHERTEXT_BYTES = 264 * 1024
 MAX_ENCRYPTED_METADATA_BYTES = 4 * 1024
 
+# File uploads (> the inline cap) live in R2 as one object per 1 MiB chunk;
+# the create body then carries a storage_object_key + chunk_count instead of
+# inline ciphertext. 25 chunks of 1 MiB = the 25 MB ceiling.
+MAX_FILE_CHUNKS = 25
+STORAGE_KEY_MAX_LEN = 128
+
+
+def _validate_content_source(
+    *,
+    ciphertext: bytes,
+    storage_object_key: str | None,
+    chunk_count: int | None,
+    content_type: ContentType,
+) -> None:
+    """Exactly one content source: inline ciphertext, or an R2
+    storage_object_key + chunk_count for file uploads."""
+    inline = len(ciphertext) > 0
+    stored = storage_object_key is not None
+    if inline == stored:
+        raise ValueError("provide inline ciphertext or a storage_object_key, but not both")
+    if storage_object_key is not None:
+        if content_type is not ContentType.file:
+            raise ValueError("storage-backed snippets must have content_type=file")
+        if chunk_count is None or not (1 <= chunk_count <= MAX_FILE_CHUNKS):
+            raise ValueError(f"chunk_count must be between 1 and {MAX_FILE_CHUNKS}")
+        if not storage_object_key.startswith("files/"):
+            raise ValueError("invalid storage_object_key")
+    elif chunk_count is not None:
+        raise ValueError("chunk_count is only valid with a storage_object_key")
+
+
 # TTL bounds for anonymous link mode: floor at one minute (no instant burn
 # races), ceiling at 24 hours per the lifetime cap.
 MIN_TTL_SECONDS = 60
@@ -71,35 +102,225 @@ class CreateLinkSnippetRequest(BaseModel):
 
     share_mode: Literal[ShareMode.link]
     content_type: ContentType
-    ciphertext: Base64Field = Field(..., max_length=MAX_CIPHERTEXT_BYTES)
+    # Optional: omitted (empty) when the content lives in R2 (storage_object_key).
+    ciphertext: Base64Field = Field(default=b"", max_length=MAX_CIPHERTEXT_BYTES)
     encrypted_metadata: Base64Field = Field(..., max_length=MAX_ENCRYPTED_METADATA_BYTES)
     ttl_seconds: int = Field(..., ge=MIN_TTL_SECONDS, le=MAX_TTL_SECONDS)
     max_reads: Literal[1] = 1
-    # Per [D-260526-01], both fields are client-computed: the client
-    # generates a fresh 16-byte salt and a 32-byte PBKDF2-SHA-256 hash
-    # (100 000 iterations) at create time. The server only stores them.
+    storage_object_key: str | None = Field(default=None, max_length=STORAGE_KEY_MAX_LEN)
+    chunk_count: int | None = Field(default=None)
+    # PBKDF2 password gate: the client generates a fresh 16-byte salt and a
+    # 32-byte SHA-256 hash at create time; the server only stores them.
     password_hash: Base64Field | None = Field(default=None, max_length=PASSWORD_HASH_BYTES)
     password_salt: Base64Field | None = Field(default=None, max_length=PASSWORD_SALT_BYTES)
 
     @model_validator(mode="after")
     def _password_pair(self) -> Self:
+        _validate_content_source(
+            ciphertext=self.ciphertext,
+            storage_object_key=self.storage_object_key,
+            chunk_count=self.chunk_count,
+            content_type=self.content_type,
+        )
         has_hash = self.password_hash is not None
         has_salt = self.password_salt is not None
         if has_hash != has_salt:
             raise ValueError(
                 "password_hash and password_salt must be provided together or omitted together"
             )
-        if (
-            self.password_hash is not None
-            and len(self.password_hash) != PASSWORD_HASH_BYTES
-        ):
+        if self.password_hash is not None and len(self.password_hash) != PASSWORD_HASH_BYTES:
             raise ValueError(f"password_hash must be exactly {PASSWORD_HASH_BYTES} bytes")
-        if (
-            self.password_salt is not None
-            and len(self.password_salt) != PASSWORD_SALT_BYTES
-        ):
+        if self.password_salt is not None and len(self.password_salt) != PASSWORD_SALT_BYTES:
             raise ValueError(f"password_salt must be exactly {PASSWORD_SALT_BYTES} bytes")
         return self
+
+
+# PIN-share (Mode 2). Longer TTL ceiling than link (up to 7 days) and a
+# raw 32-byte content key the server wraps at rest. max_reads may be null
+# (unlimited within TTL).
+PIN_MAX_TTL_SECONDS = 7 * 24 * 60 * 60
+CONTENT_KEY_BYTES = 32
+PIN_MAX_READS_CEILING = 1000
+
+
+class CreatePinShareSnippetRequest(BaseModel):
+    """Body for `POST /snippets` when share_mode=pin_share (members only).
+
+    Unlike link, the client sends the raw ``content_key`` — Mode 2 is
+    encryption-at-rest under operator trust, not zero-knowledge. The server
+    wraps the key with the key-vault master before storing it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    share_mode: Literal[ShareMode.pin_share]
+    content_type: ContentType
+    ciphertext: Base64Field = Field(default=b"", max_length=MAX_CIPHERTEXT_BYTES)
+    content_key: Base64Field = Field(..., max_length=CONTENT_KEY_BYTES)
+    encrypted_metadata: Base64Field = Field(..., max_length=MAX_ENCRYPTED_METADATA_BYTES)
+    ttl_seconds: int = Field(..., ge=MIN_TTL_SECONDS, le=PIN_MAX_TTL_SECONDS)
+    # null = unlimited reads within the TTL.
+    max_reads: int | None = Field(default=None)
+    storage_object_key: str | None = Field(default=None, max_length=STORAGE_KEY_MAX_LEN)
+    chunk_count: int | None = Field(default=None)
+    password_hash: Base64Field | None = Field(default=None, max_length=PASSWORD_HASH_BYTES)
+    password_salt: Base64Field | None = Field(default=None, max_length=PASSWORD_SALT_BYTES)
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        _validate_content_source(
+            ciphertext=self.ciphertext,
+            storage_object_key=self.storage_object_key,
+            chunk_count=self.chunk_count,
+            content_type=self.content_type,
+        )
+        if len(self.content_key) != CONTENT_KEY_BYTES:
+            raise ValueError(f"content_key must be exactly {CONTENT_KEY_BYTES} bytes")
+        if self.max_reads is not None and not (1 <= self.max_reads <= PIN_MAX_READS_CEILING):
+            raise ValueError(f"max_reads must be null or between 1 and {PIN_MAX_READS_CEILING}")
+        if (self.password_hash is None) != (self.password_salt is None):
+            raise ValueError("password_hash and password_salt must be provided together")
+        return self
+
+
+# Sync (Mode 4) — zero-knowledge personal history. The client wraps a
+# per-snippet DEK with its master KEK and sends only the wrapped form; the
+# server never sees the DEK or the KEK. No TTL / max_reads (your own clips).
+WRAPPED_DEK_MAX_BYTES = 64
+WRAP_IV_MAX_BYTES = 16
+
+
+class CreateSyncSnippetRequest(BaseModel):
+    """Body for `POST /snippets` when share_mode=sync (members only)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    share_mode: Literal[ShareMode.sync]
+    content_type: ContentType
+    ciphertext: Base64Field = Field(default=b"", max_length=MAX_CIPHERTEXT_BYTES)
+    wrapped_dek: Base64Field = Field(..., max_length=WRAPPED_DEK_MAX_BYTES)
+    wrapped_dek_iv: Base64Field = Field(..., max_length=WRAP_IV_MAX_BYTES)
+    encrypted_metadata: Base64Field = Field(..., max_length=MAX_ENCRYPTED_METADATA_BYTES)
+    storage_object_key: str | None = Field(default=None, max_length=STORAGE_KEY_MAX_LEN)
+    chunk_count: int | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        _validate_content_source(
+            ciphertext=self.ciphertext,
+            storage_object_key=self.storage_object_key,
+            chunk_count=self.chunk_count,
+            content_type=self.content_type,
+        )
+        return self
+
+
+# Discriminated on share_mode: link stays anonymous, pin_share + sync are
+# member-only.
+CreateSnippetRequest = Annotated[
+    CreateLinkSnippetRequest | CreatePinShareSnippetRequest | CreateSyncSnippetRequest,
+    Field(discriminator="share_mode"),
+]
+
+
+class PresignRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_count: int = Field(..., ge=1, le=MAX_FILE_CHUNKS)
+
+
+class PresignedChunk(BaseModel):
+    index: int
+    url: str
+
+
+class PresignResponse(BaseModel):
+    storage_object_key: str
+    chunk_count: int
+    chunks: list[PresignedChunk]
+
+
+class CreatePinShareResponse(BaseModel):
+    id: str
+    pin: str
+    expires_at: datetime
+
+
+class CreateSyncResponse(BaseModel):
+    id: str
+
+
+class SyncItem(BaseModel):
+    id: str
+    content_type: ContentType
+    # Empty for a file-backed clip — its ciphertext lives in R2 as ``chunk_count``
+    # objects, fetched on demand via GET /me/snippets/{id}/file.
+    ciphertext: Base64Field
+    wrapped_dek: Base64Field
+    wrapped_dek_iv: Base64Field
+    encrypted_metadata: Base64Field
+    size_bytes: int
+    created_at: datetime
+    # Non-null iff the content is stored in R2 rather than inline.
+    chunk_count: int | None = None
+
+
+class SyncListResponse(BaseModel):
+    items: list[SyncItem]
+    # Keyset cursor: pass as ?before= to fetch the next (older) page. Null when
+    # this is the last page.
+    next_before: datetime | None = None
+
+
+class SyncFileUrlsResponse(BaseModel):
+    """Presigned GET URL per R2 chunk for a storage-backed Sync clip. The owner
+    fetches + decrypts these on demand (the DEK never leaves their tab)."""
+
+    download_urls: list[str]
+
+
+class ByPinRequest(BaseModel):
+    """Body for `POST /snippets/by-pin`. Resolves a 4-digit PIN to a Mode 2
+    share (or signals a live Mode 3 pairing). ``password_hash`` is supplied on
+    the retry when a share is password-gated; ``turnstile_token`` after the
+    per-IP failure threshold."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pin: str = Field(..., pattern=r"^[0-9]{4}$")
+    password_hash: Base64Field | None = Field(default=None, max_length=PASSWORD_HASH_BYTES)
+    turnstile_token: str | None = None
+
+
+class PinResolveResponse(BaseModel):
+    """200 body for a resolved Mode 2 PIN. Carries the server-unwrapped content
+    key alongside the ciphertext — the client decrypts locally."""
+
+    mode: Literal["pin_share"] = "pin_share"
+    id: str
+    content_type: ContentType
+    content_key: Base64Field
+    # Empty when file-backed; fetch + decrypt the chunk objects at download_urls.
+    ciphertext: Base64Field
+    encrypted_metadata: Base64Field
+    size_bytes: int
+    created_at: datetime
+    expires_at: datetime | None
+    max_reads: int | None
+    read_count: int
+    chunk_count: int | None = None
+    download_urls: list[str] | None = None
+
+
+class PairSignalResponse(BaseModel):
+    """200 body when the PIN matches a live Mode 3 pairing — the client opens
+    the pair WebSocket rather than fetching content."""
+
+    mode: Literal["pair"] = "pair"
+
+
+class RotatePinResponse(BaseModel):
+    pin: str
 
 
 class VerifyPasswordRequest(BaseModel):
@@ -137,6 +358,8 @@ class GoneReason(enum.StrEnum):
     expired = "expired"
     burned = "burned"
     taken_down = "taken_down"
+    # Mode 2 PIN auto-invalidated after too many wrong attempts (§7.6.7 #7).
+    disabled = "disabled"
 
 
 class GoneResponse(BaseModel):
@@ -148,6 +371,8 @@ class GetSnippetResponse(BaseModel):
     id: str
     share_mode: ShareMode
     content_type: ContentType
+    # Empty when the content is file-backed; the client fetches + decrypts the
+    # chunk objects at ``download_urls`` (one presigned GET per chunk) instead.
     ciphertext: Base64Field
     encrypted_metadata: Base64Field
     size_bytes: int
@@ -155,3 +380,5 @@ class GetSnippetResponse(BaseModel):
     expires_at: datetime | None
     max_reads: int | None
     read_count: int
+    chunk_count: int | None = None
+    download_urls: list[str] | None = None

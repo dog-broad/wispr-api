@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.jobs.purge import purge_expired
+from app.jobs.purge import purge_expired, sweep_orphans
 from app.models.snippets import ContentType, ShareMode, Snippet
 
 _TEST_DATABASE_URL = os.environ.get(
@@ -131,3 +131,92 @@ async def test_purge_idempotent_on_empty_table(
     second = await purge_expired(factory)
     assert first == 0
     assert second == 0
+
+
+class FakeStore:
+    """Object store double for the janitor: seed objects with last-modified
+    times and record what gets deleted."""
+
+    def __init__(self, objects: dict[str, datetime] | None = None) -> None:
+        self.objects = dict(objects or {})
+        self.deleted: list[str] = []
+
+    def presign_put(self, key: str) -> str:
+        return key
+
+    def presign_get(self, key: str) -> str:
+        return key
+
+    async def head_size(self, key: str) -> int | None:
+        return 1 if key in self.objects else None
+
+    async def delete_keys(self, keys: list[str]) -> None:
+        for key in keys:
+            self.deleted.append(key)
+            self.objects.pop(key, None)
+
+    async def list_objects(self, prefix: str) -> list[tuple[str, datetime]]:
+        return [(k, ts) for k, ts in self.objects.items() if k.startswith(prefix)]
+
+
+def _file_snippet(snippet_id: str, key: str, chunk_count: int, expires_at: datetime) -> Snippet:
+    return Snippet(
+        id=snippet_id,
+        share_mode=ShareMode.link,
+        content_type=ContentType.file,
+        encrypted_metadata=b"meta",
+        ciphertext_inline=None,
+        storage_object_key=key,
+        chunk_count=chunk_count,
+        size_bytes=chunk_count * 1024,
+        max_reads=1,
+        expires_at=expires_at,
+    )
+
+
+async def test_purge_deletes_r2_chunks_for_expired_file_snippet(
+    db_session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    now = datetime.now(tz=UTC)
+    db_session.add(_file_snippet("filexpired01", "files/tok1", 2, now - timedelta(hours=1)))
+    await db_session.commit()
+    store = FakeStore()
+
+    deleted = await purge_expired(factory, store)
+
+    assert deleted == 1
+    assert set(store.deleted) == {"files/tok1/0", "files/tok1/1"}
+
+
+async def test_sweep_reclaims_only_old_unfinalized_prefixes(
+    db_session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    now = datetime.now(tz=UTC)
+    old = now - timedelta(hours=1)
+    fresh = now - timedelta(minutes=5)
+    # "files/kept" is referenced by a finalized snippet; the other two are not.
+    db_session.add(_file_snippet("keptsnippet1", "files/kept", 1, now + timedelta(hours=1)))
+    await db_session.commit()
+    store = FakeStore(
+        {
+            "files/kept/0": old,
+            "files/orphanold/0": old,
+            "files/orphanold/1": old,
+            "files/orphanfresh/0": fresh,
+        }
+    )
+
+    swept = await sweep_orphans(factory, store, max_age_seconds=30 * 60)
+
+    assert swept == 1  # only files/orphanold
+    assert set(store.deleted) == {"files/orphanold/0", "files/orphanold/1"}
+    # Finalized prefix and the still-fresh (maybe in-flight) upload are kept.
+    assert "files/kept/0" in store.objects
+    assert "files/orphanfresh/0" in store.objects
+
+
+async def test_sweep_noop_without_store(
+    db_session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    _ = db_session
+    assert await sweep_orphans(factory, None) == 0

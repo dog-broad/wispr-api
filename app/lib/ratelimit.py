@@ -154,6 +154,44 @@ snippets_create_anon_limit = rate_limit(
 )
 snippets_get_limit = rate_limit(_SNIPPETS_GET_BURST, _SNIPPETS_GET_WINDOW, "snippets-get")
 pair_create_limit = rate_limit(_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW, "pair-create")
+# File-upload presign — same per-IP ceiling as snippet create (§6).
+files_presign_limit = rate_limit(_SNIPPETS_CREATE_BURST, _SNIPPETS_CREATE_WINDOW, "files-presign")
+
+# Magic-link requests are limited two ways: 10/hr/IP and 3/hr/email. The IP
+# limit is a normal per-IP dependency; the email limit is keyed by the
+# normalized address so one IP can't burn a stranger's budget and one address
+# can't be spammed from many IPs.
+_MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW = burst_per_period(10, "hour")
+magic_link_ip_limit = rate_limit(_MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW, "magic-link-ip")
+# Public takedown reports — hard ceiling of 5/hr/IP. A separate hourly counter
+# in the route requires a Turnstile challenge above 3, so this bucket only ever
+# rejects the 6th report in an hour.
+_REPORTS_BURST, _REPORTS_WINDOW = burst_per_period(5, "hour")
+reports_limit = rate_limit(_REPORTS_BURST, _REPORTS_WINDOW, "reports")
+# PIN redeem via /snippets/by-pin — 5/min and 30/hr per IP (§6/§12).
+_BY_PIN_MIN_BURST, _BY_PIN_MIN_WINDOW = burst_per_period(5, "minute")
+_BY_PIN_HR_BURST, _BY_PIN_HR_WINDOW = burst_per_period(30, "hour")
+by_pin_minute_limit = rate_limit(_BY_PIN_MIN_BURST, _BY_PIN_MIN_WINDOW, "by-pin-min")
+by_pin_hour_limit = rate_limit(_BY_PIN_HR_BURST, _BY_PIN_HR_WINDOW, "by-pin-hr")
+
+_MAGIC_LINK_EMAIL_BURST, _MAGIC_LINK_EMAIL_WINDOW = burst_per_period(3, "hour")
+
+
+async def consume_magic_link_email(redis_client: Redis, email: str) -> TokenBucketResult:
+    """Per-email half of the magic-link limit. Returns the bucket result so the
+    caller can stay silent (still 200) on exhaustion rather than leaking that
+    the address exists via a 429."""
+    key = f"rl:magic-link-email:{email}"
+    return await consume_token(redis_client, key, _MAGIC_LINK_EMAIL_BURST, _MAGIC_LINK_EMAIL_WINDOW)
+
+
+# Data export — 3/day per user. Keyed by user id, not IP: exporting is a
+# per-account action, so a shared office IP shouldn't burn one user's budget.
+_EXPORT_BURST, _EXPORT_WINDOW = burst_per_period(3, "day")
+
+
+async def consume_export(redis_client: Redis, user_id: object) -> TokenBucketResult:
+    return await consume_token(redis_client, f"rl:export:{user_id}", _EXPORT_BURST, _EXPORT_WINDOW)
 
 
 # Per-(IP, snippet) rate limit for password verification. PROJECT.md
@@ -171,9 +209,7 @@ async def verify_password_limit(
 ) -> None:
     ip = extract_client_ip(request)
     key = f"rl:verify-password:{snippet_id}:{bucket_key(ip)}"
-    result = await consume_token(
-        redis_client, key, _VERIFY_PASSWORD_BURST, _VERIFY_PASSWORD_WINDOW
-    )
+    result = await consume_token(redis_client, key, _VERIFY_PASSWORD_BURST, _VERIFY_PASSWORD_WINDOW)
     if not result.allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

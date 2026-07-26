@@ -6,15 +6,33 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import async_session_maker
+from app.jobs.alerts import run_alert_poll_loop
 from app.jobs.purge import run_purge_loop
+from app.lib.email import build_email_transport
+from app.lib.storage import build_object_store
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.redis_client import close_redis, open_redis
-from app.routes import health, pair, pair_ws, snippet_watch, snippets
+from app.routes import (
+    account,
+    admin,
+    admin_ws,
+    auth,
+    files,
+    health,
+    me,
+    pair,
+    pair_ws,
+    reports,
+    snippet_watch,
+    snippets,
+    sync_ws,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,26 +41,50 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     app.state.redis = await open_redis()
+    # Shared HTTP client for outbound provider calls (email today; provider
+    # console integrations later). Owned by the lifespan so connections are
+    # pooled and cleanly closed on shutdown.
+    app.state.http_client = httpx.AsyncClient()
+    app.state.email_transport = build_email_transport(
+        api_key=settings.resend_api_key,
+        sender=settings.email_from,
+        client=app.state.http_client,
+    )
     stop_event = asyncio.Event()
     purge_task = asyncio.create_task(
         run_purge_loop(
             async_session_maker,
             settings.purge_interval_seconds,
             stop_event,
+            build_object_store(settings),
         ),
         name="purge-loop",
+    )
+    alert_task = asyncio.create_task(
+        run_alert_poll_loop(
+            async_session_maker,
+            app.state.redis,
+            app.state.http_client,
+            settings,
+            app.state.email_transport,
+            settings.alert_poll_interval_seconds,
+            stop_event,
+        ),
+        name="alert-poll-loop",
     )
     try:
         yield
     finally:
         stop_event.set()
-        try:
-            await asyncio.wait_for(purge_task, timeout=10)
-        except TimeoutError:
-            logger.warning("purge: shutdown timeout, cancelling")
-            purge_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await purge_task
+        for task, label in ((purge_task, "purge"), (alert_task, "alerts")):
+            try:
+                await asyncio.wait_for(task, timeout=10)
+            except TimeoutError:
+                logger.warning("%s: shutdown timeout, cancelling", label)
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        await app.state.http_client.aclose()
         await close_redis(app.state.redis)
 
 
@@ -75,10 +117,18 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(me.router)
+    app.include_router(admin.router)
+    app.include_router(account.router)
     app.include_router(snippets.router)
+    app.include_router(reports.router)
+    app.include_router(files.router)
     app.include_router(snippet_watch.router)
     app.include_router(pair.router)
     app.include_router(pair_ws.router)
+    app.include_router(sync_ws.router)
+    app.include_router(admin_ws.router)
 
     return app
 

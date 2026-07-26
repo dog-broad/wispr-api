@@ -12,6 +12,10 @@ dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "redis>=5.2",
+    "httpx>=0.28",
+    "argon2-cffi>=23.1",
+    "cryptography>=44",
+    "boto3>=1.35",
 ]
 
 [dependency-groups]
@@ -20,7 +24,6 @@ dev = [
     "mypy>=1.13",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "httpx>=0.28",
 ]
 
 [tool.uv]
@@ -60,6 +63,10 @@ exclude = ["alembic/versions/"]
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
