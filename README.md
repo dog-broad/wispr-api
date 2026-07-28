@@ -4,7 +4,7 @@ FastAPI (Python 3.12) backend for [Wispr](https://wispr.rushyendra.dev) — a we
 
 **Frontend counterpart:** [`dog-broad/wispr-web`](https://github.com/dog-broad/wispr-web) (Next.js 15 + TS + Tailwind).
 
-Private repo. Deploys to an Azure VM (later: Oracle Cloud Free Tier) via docker-compose behind a shared Caddy reverse proxy.
+Private repo. Deploys via docker-compose behind a shared Caddy reverse proxy, exposed to the internet through a Cloudflare Tunnel (no inbound ports on the host).
 
 ## Quickstart — Docker Compose (preferred)
 
@@ -66,55 +66,47 @@ uv run mypy app/ alembic/ tests/
 
 ## Production deploy
 
-Production runs on a shared VM behind a single Caddy reverse proxy that fronts every project on the box. The setup follows the conventions documented in `~/proxy/HOSTING.md` on the VM:
+The API is self-hosted: each project lives in `~/<project>/` with its own docker-compose and joins a shared external `web` Docker network. A separate `~/infra/` compose runs the front door — **Caddy** + **cloudflared** — and TLS terminates at the **Cloudflare edge** via the tunnel, so nothing on the host binds a public port.
 
-- Each project lives in `~/<project>/` with its own docker-compose.
-- Public-facing services join the external `web` Docker network.
-- Private services (postgres, redis) stay on the project's default network — never exposed.
-- A `docker-compose.prod.yml` overlay layers production-only changes on top of the dev compose.
+- Public services join the external `web` network; private services (postgres, redis) stay on the project's default network — never exposed.
+- A `docker-compose.prod.yml` overlay layers production-only changes on the dev compose: the `prod` image (baked source, no dev deps), no host port bindings, `restart: unless-stopped`, and `env_file` to inject the deployment secrets into the api container.
 
-Bring it up on the VM:
+Bring it up on the host:
 
 ```bash
 # Once, on first deploy
 cd ~ && git clone https://github.com/dog-broad/wispr-api.git
 cd ~/wispr-api
 cp .env.example .env
-# Generate a strong postgres password and rewrite the .env values:
-NEW_PW=$(openssl rand -hex 24)
-sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$NEW_PW/" .env
-sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql+asyncpg://wispr:$NEW_PW@localhost:5432/wispr|" .env
-sed -i 's|^CORS_ALLOWED_ORIGINS=.*|CORS_ALLOWED_ORIGINS=https://wispr.rushyendra.dev|' .env
-sed -i 's|^CORS_ALLOWED_ORIGIN_REGEX=.*|CORS_ALLOWED_ORIGIN_REGEX=^https://wispr-web(\\?:-[a-z0-9-]+)\\?\\.vercel\\.app$|' .env
-
-# Bring up the prod stack
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-
-# Run schema migrations (idempotent — safe to re-run on redeploy)
-docker compose exec api alembic upgrade head
 ```
 
-Then add the Caddyfile entry for the api hostname:
+Fill in `.env` with the deployment secrets — a strong `POSTGRES_PASSWORD`, a `SERVER_PEPPER`, a base64 32-byte `KEY_VAULT_MASTER_V1`, and the Resend / Turnstile / R2 keys — plus the production URLs:
+
+```dotenv
+ENVIRONMENT=production
+DATABASE_URL=postgresql+asyncpg://wispr:<password>@db:5432/wispr
+CORS_ALLOWED_ORIGINS=https://wispr.rushyendra.dev
+APP_BASE_URL=https://wispr.rushyendra.dev
+SESSION_COOKIE_DOMAIN=.rushyendra.dev
+SESSION_COOKIE_SECURE=true
+```
+
+Then build the stack and run migrations:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head
+```
+
+Route it through the front door. In `~/infra/Caddyfile`, add a block matching the app's hostname and reverse-proxying to its service on the `web` network — TLS is handled upstream by Cloudflare, so serve plain HTTP:
 
 ```caddyfile
-api.wispr.rushyendra.dev {
-    encode gzip
-
-    # Trust boundary: no Cloudflare in front of this host, so any
-    # client-supplied CF-Connecting-IP is untrusted. Strip it, then
-    # set it to the actual connecting peer so the FastAPI rate-limiter
-    # buckets on the real client IP. Without these two lines an attacker
-    # can rotate CF-Connecting-IP to bypass per-IP rate limits. When
-    # Cloudflare is added later, swap for a trusted_proxies block that
-    # re-trusts CF-Connecting-IP only from inside the CF IP range.
-    request_header -CF-Connecting-IP
-    request_header CF-Connecting-IP {http.request.remote.host}
-
-    reverse_proxy wispr-api-api-1:8000
+http://wispr-api.rushyendra.dev {
+    reverse_proxy api:8000
 }
 ```
 
-…in `~/proxy/Caddyfile`, then `docker exec proxy-caddy caddy reload --config /etc/caddy/Caddyfile` (graceful) or `sudo docker restart proxy-caddy` (heavier). Let's Encrypt provisions the cert on the first request.
+Reload Caddy (`docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`), then add `wispr-api.rushyendra.dev` as a public hostname on the Cloudflare tunnel pointing at `http://caddy:80`. Because the origin is reachable only through the tunnel, `CF-Connecting-IP` arrives trusted — no header-stripping guard is needed.
 
 ## Environment
 
@@ -131,19 +123,23 @@ The split exists because `localhost` makes sense for a process running directly 
 
 ```
 app/
-├── main.py            FastAPI app factory + CORS + security headers + lifespan
+├── main.py            FastAPI app factory + CORS + security headers + lifespan (purge + alert loops)
 ├── config.py          Settings (pydantic-settings, env-driven)
 ├── db.py              SQLAlchemy 2.0 async base + engine
-├── redis_client.py    Redis async client with lifespan-managed lifecycle
-├── lib/               clientip, ratelimit, ids
-├── jobs/              Background tasks (purge sweeper)
-├── middleware/        Security headers middleware
-├── models/            ORM models (snippets)
-├── routes/            One router per concern (health, snippets)
+├── redis_client.py    Redis async client, lifespan-managed
+├── lib/               crypto + infra helpers: tokens, credentials, keyvault, keyrotation,
+│                      storage (R2), email, turnstile, clientip, ratelimit, lockout, invites,
+│                      reauth, audit, killswitch, dashboard, providers, backup, and the
+│                      pair / sync / watch signaling buses
+├── jobs/              Background loops: purge sweeper + red-state alert poll
+├── middleware/        Security headers
+├── models/            ORM models: snippets, accounts, reports, admin
+├── routes/            One router per concern: health, snippets, snippet_watch, pair (+ pair_ws),
+│                      auth, account, me, files, sync_ws, reports, admin (+ admin_ws)
 └── schemas/           Pydantic request/response shapes
 alembic/               Async migrations
 tests/                 pytest mirror of app/
-Dockerfile             Multi-stage: dev (with --reload + bind-mount) and prod (baked source, no dev deps)
+Dockerfile             Multi-stage: dev (--reload + bind-mount) and prod (baked source, no dev deps)
 docker-compose.yml     api + postgres:16 + redis:7 (dev defaults)
-docker-compose.prod.yml  Overlay: joins shared `web` network, strips host ports, restart: unless-stopped
+docker-compose.prod.yml  Overlay: prod image, shared `web` network, no host ports, restart, env_file
 ```
