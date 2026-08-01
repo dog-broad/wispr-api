@@ -482,7 +482,7 @@ async def resolve_by_pin(
     responses={
         status.HTTP_401_UNAUTHORIZED: {
             "model": PasswordRequiredResponse,
-            "description": "Snippet is password-protected — call verify-password with the hash",
+            "description": "Snippet is password-protected; call verify-password with the hash",
         },
         status.HTTP_404_NOT_FOUND: {"description": "Snippet ID does not exist"},
         status.HTTP_410_GONE: {

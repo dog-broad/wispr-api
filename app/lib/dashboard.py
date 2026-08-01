@@ -108,9 +108,9 @@ async def _health(session: AsyncSession, redis: Redis) -> list[Metric]:
         )
     )
     out.append(
-        _unknown("cert_expiry", "cert expiry", "reads the Caddy cert volume — not wired yet")
+        _unknown("cert_expiry", "cert expiry", "reads the Caddy cert volume, not wired yet")
     )
-    out.append(_unknown("domain_expiry", "domain expiry", "WHOIS lookup — not wired yet"))
+    out.append(_unknown("domain_expiry", "domain expiry", "WHOIS lookup, not wired yet"))
     out.append(_unknown("master_key", "master key age", "rotation timestamp not tracked yet"))
     return out
 
