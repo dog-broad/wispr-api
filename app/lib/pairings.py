@@ -24,7 +24,7 @@ from redis.asyncio import Redis
 _PIN_KEY_PREFIX = "pair:pin:"
 _SENDER_KEY_PREFIX = "pair:sender:"
 
-# 60-second waiting window matches the §7.6.7 #11 user-visible countdown.
+# 60-second waiting window matches the user-visible countdown.
 PAIRING_TTL_SECONDS = 60
 
 # 4-digit numeric PIN keeps the on-mobile numeric keyboard affordance and
@@ -91,7 +91,7 @@ async def create_pairing(
     now: int | None = None,
 ) -> Pairing:
     """Issue a fresh PIN + sender token for ``sender_ip``, or return the
-    existing waiting pair if one is still active (D-0024-16).
+    existing waiting pair if one is still active.
 
     Idempotency: a repeat call while the previous pair is still waiting
     returns the same PIN + sender token, with the original ``expires_at``

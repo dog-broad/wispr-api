@@ -33,7 +33,7 @@ async def create_pair(request: Request, redis_client: _RedisDep) -> CreatePairRe
     Issues a 4-digit PIN + opaque sender token. A repeat call from the
     same sender IP while a previous pair is still in its 60-second
     waiting window returns that same pair unchanged (one active waiting
-    pair per sender IP — D-0024-16), so the on-screen countdown stays
+    pair per sender IP), so the on-screen countdown stays
     honest instead of silently resetting.
     """
     sender_ip = extract_client_ip(request)

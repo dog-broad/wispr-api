@@ -39,7 +39,7 @@ async def test_create_pairing_persists_lookup(redis_client: Redis) -> None:
 
 async def test_create_pairing_is_idempotent_per_sender_ip(redis_client: Redis) -> None:
     """A second call from the same sender IP while the first pair is
-    still waiting returns the original PIN + sender token (D-0024-16)."""
+    still waiting returns the original PIN + sender token."""
     first = await create_pairing(redis_client, "203.0.113.20", now=1_000_000)
     second = await create_pairing(redis_client, "203.0.113.20", now=1_000_005)
 

@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         return value
 
     # Background purge: sweeps expired snippets out of the table. 5 minutes
-    # matches the cadence in §12; override via env for tests that want to
+    # is the default sweep cadence; override via env for tests that want to
     # observe a purge tick without waiting (or to disable entirely with 0).
     purge_interval_seconds: int = Field(default=300, ge=0)
 

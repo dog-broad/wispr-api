@@ -33,8 +33,8 @@ async def watch_snippet(
 ) -> None:
     """Live read-counter stream for the sender's SentState.
 
-    Anyone with the snippet id can attach (no owner_token gate per
-    [D-260526-02]). The watch surface leaks one meta-fact ("this
+    Anyone with the snippet id can attach (no owner_token gate).
+    The watch surface leaks one meta-fact ("this
     share has been read") that anyone with the URL learns anyway from
     a single GET attempt.
 

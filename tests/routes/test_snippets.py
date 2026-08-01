@@ -307,7 +307,7 @@ async def test_verify_password_unprotected_snippet_returns_400(
 async def test_verify_password_rate_limited_per_snippet(
     rate_limit_client: AsyncClient,
 ) -> None:
-    """5/min/IP/snippet from PROJECT.md §12. The 6th attempt from the
+    """5/min/IP/snippet rate limit. The 6th attempt from the
     same IP within a minute on the same snippet returns 429; another
     snippet from the same IP still gets through."""
     # Two separate snippets, both password-protected.

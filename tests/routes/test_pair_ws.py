@@ -116,7 +116,7 @@ def test_duplicate_sender_for_same_pin_rejected(
 
 
 def test_receiver_unknown_pin_yields_unknown_pin(ws_client: TestClient) -> None:
-    """PIN never existed in either namespace → §7.6.7 #12.
+    """PIN never existed in either namespace.
 
     Redis lookup miss fires before the registry check, so a fully
     unknown PIN is reported as ``unknown_pin``, distinct from the
@@ -194,7 +194,7 @@ def test_receiver_redeem_rate_limited_per_minute(
     ws_client: TestClient, ws_redis: sync_redis.Redis
 ) -> None:
     """Five wrong-PIN redeems from the same IP fit the burst; the sixth
-    comes back rate_limited_minute (per PROJECT.md §12)."""
+    comes back rate_limited_minute."""
     headers = {"cf-connecting-ip": "203.0.113.40"}
     for _ in range(5):
         with ws_client.websocket_connect("/ws/pair", headers=headers) as ws:
@@ -219,7 +219,7 @@ def test_sender_disconnect_closes_receiver(
     ws_client: TestClient, ws_redis: sync_redis.Redis
 ) -> None:
     """When the sender drops after pairing, the receiver's WS closes
-    with the peer_disconnected reason (§7.6.7 #20)."""
+    with the peer_disconnected reason."""
     _seed_pair(ws_redis, pin="1234", sender_token="tok-abc", sender_ip="203.0.113.50")
 
     with (

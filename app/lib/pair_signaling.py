@@ -6,29 +6,29 @@ from dataclasses import dataclass
 
 from fastapi import WebSocket
 
-# Per-frame ceiling on signaling messages. PROJECT.md §6 says "≤ 16 KiB
-# per signal message"; SDP and ICE candidates are well under that in
-# practice. The cap exists to bound a misbehaving or malicious client
-# more than to gate legitimate WebRTC traffic.
+# Per-frame ceiling on signaling messages: at most 16 KiB per signal
+# message. SDP and ICE candidates are well under that in practice. The
+# cap exists to bound a misbehaving or malicious client more than to gate
+# legitimate WebRTC traffic.
 MAX_SIGNAL_FRAME_BYTES = 16 * 1024
 
-# Receiver-side PIN-redeem buckets. Numbers per PROJECT.md §12.
+# Receiver-side PIN-redeem buckets.
 REDEEM_BURST_PER_MINUTE = 5
 REDEEM_BURST_PER_HOUR = 30
 
 
 class PairFailReason(enum.StrEnum):
     """Wire reasons accompanying every ``pair_failed`` op the server
-    sends. The receiver-side §7.6.7 outcomes map onto these one-to-one;
+    sends. The receiver-side redeem outcomes map onto these one-to-one;
     web client code branches on the string directly so it can render the
-    spec'd copy without re-interpreting numeric codes.
+    intended copy without re-interpreting numeric codes.
     """
 
-    unknown_pin = "unknown_pin"  # §7.6.7 #12 — PIN not in either namespace
-    sender_offline = "sender_offline"  # §7.6.7 #9
-    already_redeemed = "already_redeemed"  # §7.6.7 #10
-    rate_limited_minute = "rate_limited_minute"  # §7.6.7 #13
-    rate_limited_hour = "rate_limited_hour"  # §7.6.7 #14
+    unknown_pin = "unknown_pin"  # PIN not in either namespace
+    sender_offline = "sender_offline"  # sender never attached or has gone offline
+    already_redeemed = "already_redeemed"  # PIN already consumed by another receiver
+    rate_limited_minute = "rate_limited_minute"  # per-minute redeem limit hit
+    rate_limited_hour = "rate_limited_hour"  # per-hour redeem limit hit
     bad_op = "bad_op"  # malformed or whitelisted-out envelope
     bad_envelope = "bad_envelope"  # JSON parse failure or shape mismatch
     oversized_signal = "oversized_signal"  # frame exceeded MAX_SIGNAL_FRAME_BYTES
@@ -39,8 +39,8 @@ class PairFailReason(enum.StrEnum):
 
 class AttachOutcome(enum.StrEnum):
     """Outcome of ``attach_receiver``. Distinct from ``PairFailReason``
-    because the registry doesn't know about §7.6.7 numbering; the route
-    translates."""
+    because the registry doesn't know about the redeem-outcome numbering;
+    the route translates."""
 
     ok = "ok"
     sender_offline = "sender_offline"
@@ -65,7 +65,7 @@ class PairSignalingRegistry:
     """Lifetime registry of live signaling pairs, keyed by PIN.
 
     The registry is process-local: Redis owns the durable issue-time
-    state ([D-260525-02]), this owns the live-socket state. Single-VM
+    state, this owns the live-socket state. Single-VM
     deployment makes a process-local dict sufficient; cross-host
     signaling is out of scope for v1 and would require a pub/sub bus.
     """
@@ -82,9 +82,9 @@ class PairSignalingRegistry:
         ws: WebSocket,
     ) -> bool:
         """Claim the PIN slot for a sender WS. Returns False if some
-        other sender already holds it (D-0024-16 says only one active
-        waiting pair per sender IP, but a duplicate attach via the same
-        token can race in)."""
+        other sender already holds it (only one active waiting pair per
+        sender IP is allowed, but a duplicate attach via the same token
+        can race in)."""
         async with self._lock:
             if pin in self._by_pin:
                 return False

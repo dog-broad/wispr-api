@@ -140,7 +140,7 @@ def burst_per_period(burst: int, period: str) -> tuple[int, int]:
     return burst, seconds
 
 
-# Limit ceilings come from PROJECT.md §6 and §12. The rate_limit factory
+# Limit ceilings are fixed per action. The rate_limit factory
 # returns a fresh function per call, so we build them once at import time
 # and let routes import the resulting dep — that gives tests a stable
 # function object to plug into `app.dependency_overrides` if they want
@@ -154,7 +154,7 @@ snippets_create_anon_limit = rate_limit(
 )
 snippets_get_limit = rate_limit(_SNIPPETS_GET_BURST, _SNIPPETS_GET_WINDOW, "snippets-get")
 pair_create_limit = rate_limit(_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW, "pair-create")
-# File-upload presign: same per-IP ceiling as snippet create (§6).
+# File-upload presign: same per-IP ceiling as snippet create.
 files_presign_limit = rate_limit(_SNIPPETS_CREATE_BURST, _SNIPPETS_CREATE_WINDOW, "files-presign")
 
 # Magic-link requests are limited two ways: 10/hr/IP and 3/hr/email. The IP
@@ -168,7 +168,7 @@ magic_link_ip_limit = rate_limit(_MAGIC_LINK_IP_BURST, _MAGIC_LINK_IP_WINDOW, "m
 # rejects the 6th report in an hour.
 _REPORTS_BURST, _REPORTS_WINDOW = burst_per_period(5, "hour")
 reports_limit = rate_limit(_REPORTS_BURST, _REPORTS_WINDOW, "reports")
-# PIN redeem via /snippets/by-pin — 5/min and 30/hr per IP (§6/§12).
+# PIN redeem via /snippets/by-pin — 5/min and 30/hr per IP.
 _BY_PIN_MIN_BURST, _BY_PIN_MIN_WINDOW = burst_per_period(5, "minute")
 _BY_PIN_HR_BURST, _BY_PIN_HR_WINDOW = burst_per_period(30, "hour")
 by_pin_minute_limit = rate_limit(_BY_PIN_MIN_BURST, _BY_PIN_MIN_WINDOW, "by-pin-min")
@@ -194,8 +194,8 @@ async def consume_export(redis_client: Redis, user_id: object) -> TokenBucketRes
     return await consume_token(redis_client, f"rl:export:{user_id}", _EXPORT_BURST, _EXPORT_WINDOW)
 
 
-# Per-(IP, snippet) rate limit for password verification. PROJECT.md
-# §12: 5/min/IP/snippet. The bucket key embeds the snippet id so a
+# Per-(IP, snippet) rate limit for password verification:
+# 5/min/IP/snippet. The bucket key embeds the snippet id so a
 # rate-limited IP can still verify other snippets it has links to;
 # the threat is brute-forcing one snippet's gate, not a generic
 # verify-endpoint abuse.

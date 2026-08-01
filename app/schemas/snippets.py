@@ -38,7 +38,7 @@ Base64Field = Annotated[
 ]
 
 # Anonymous link payload caps. The 256 KiB inline-file ceiling
-# ([PROJECT.md §10 M2] / §6) drives the ciphertext bound: raw bytes
+# drives the ciphertext bound: raw bytes
 # plus a 12-byte IV + 16-byte AES-GCM tag fit within 257 KiB; we pad
 # to 264 KiB so a small amount of base64-decoding slack doesn't
 # bounce a legitimate request. Chunked file uploads (R2) push this
@@ -343,7 +343,7 @@ class PasswordRequiredResponse(BaseModel):
     """401 body for `GET /snippets/{id}` when the snippet is gated by
     a password. The client uses ``password_salt`` to recompute its
     PBKDF2 hash before calling ``verify-password``. The salt is not a
-    secret (see [D-260526-01])."""
+    secret."""
 
     status: Literal["password_required"] = "password_required"
     password_salt: Base64Field
@@ -358,7 +358,7 @@ class GoneReason(enum.StrEnum):
     expired = "expired"
     burned = "burned"
     taken_down = "taken_down"
-    # Mode 2 PIN auto-invalidated after too many wrong attempts (§7.6.7 #7).
+    # Mode 2 PIN auto-invalidated after too many wrong attempts.
     disabled = "disabled"
 
 

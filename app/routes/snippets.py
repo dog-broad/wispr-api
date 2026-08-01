@@ -62,12 +62,12 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 _PIN_RETRIES = 8
 
-# Turnstile kicks in after this many failed PIN attempts from one IP (§7.6.7 #15).
+# Turnstile kicks in after this many failed PIN attempts from one IP.
 _BY_PIN_TURNSTILE_AFTER = 3
 _BY_PIN_FAIL_TTL_SECONDS = 3600
 
 # A Mode 2 share auto-invalidates after this many wrong password attempts,
-# counted on the row across all IPs (§7.6.7 #7).
+# counted on the row across all IPs.
 _MAX_PIN_FAILED_ATTEMPTS = 50
 
 
@@ -500,8 +500,8 @@ async def get_snippet(
     """Fetch a snippet's ciphertext, burning one read.
 
     Password-protected snippets short-circuit to 401 before the read-
-    count CAS so wrong passwords don't burn the snippet (see
-    [D-260526-01]); the burn happens inside ``verify_password`` instead.
+    count CAS so wrong passwords don't burn the snippet; the burn happens
+    inside ``verify_password`` instead.
     """
     snippet = await _load_snippet(session, snippet_id)
     if snippet is None:

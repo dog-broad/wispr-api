@@ -44,7 +44,7 @@ _OP_RECEIVER_CONNECTED = "receiver_connected"
 
 @router.websocket("/ws/pair")
 async def ws_pair(ws: WebSocket) -> None:
-    """Pair signaling relay. See [D-260525-03] for the protocol shape.
+    """Pair signaling relay.
 
     Sender: opens ``?pin=…&sender_token=…``. Token is validated against
     the stored pair record; on success the sender's socket is parked in
@@ -149,7 +149,7 @@ async def _run_receiver(ws: WebSocket, sender_ip: str, redis_client: Redis) -> N
     pin = pin_value
 
     # Rate-limit the redeem attempt. Two layered budgets keep a single
-    # rogue IP from drowning the namespace ([§12]).
+    # rogue IP from drowning the namespace.
     rl_key_suffix = bucket_key(sender_ip)
     minute = await consume_token(
         redis_client,
@@ -193,7 +193,7 @@ async def _run_receiver(ws: WebSocket, sender_ip: str, redis_client: Redis) -> N
         return
 
     # Pair established. Sender keeps its registry slot; the Redis state
-    # is *not* deleted (see [D-260525-03]) so a duplicate redeem on this
+    # is *not* deleted so a duplicate redeem on this
     # PIN still resolves and surfaces ``already_redeemed`` instead of a
     # misleading ``unknown_pin``. TTL on the Redis record handles the
     # cleanup 60s after issue.

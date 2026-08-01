@@ -53,7 +53,7 @@ async def test_post_pair_different_ips_get_different_pins(
 async def test_post_pair_429s_when_budget_exhausted(
     redis_only_rate_limit_client: AsyncClient,
 ) -> None:
-    """30/hr/IP per PROJECT.md §12. The 31st request from the same IP
+    """30/hr/IP rate limit. The 31st request from the same IP
     inside the bucket window must come back 429 with Retry-After."""
     client = redis_only_rate_limit_client
     ip = "203.0.113.140"
