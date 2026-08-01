@@ -1,12 +1,12 @@
 # wispr-api
 
-FastAPI (Python 3.12) backend for [Wispr](https://wispr.rushyendra.dev) — a web-only zero-knowledge clipboard.
+FastAPI (Python 3.12) backend for [Wispr](https://wispr.rushyendra.dev), a web-only zero-knowledge clipboard.
 
 **Frontend counterpart:** [`dog-broad/wispr-web`](https://github.com/dog-broad/wispr-web) (Next.js 15 + TS + Tailwind).
 
 Private repo. Deploys via docker-compose behind a shared Caddy reverse proxy, exposed to the internet through a Cloudflare Tunnel (no inbound ports on the host).
 
-## Quickstart — Docker Compose (preferred)
+## Quickstart: Docker Compose (preferred)
 
 Requires Docker Desktop (or Docker Engine + the Compose v2 plugin).
 
@@ -30,19 +30,19 @@ Tear down with `docker compose down` (add `-v` to wipe the postgres/redis volume
 
 ### Run the whole stack locally
 
-Two terminals — one for each repo. Web calls api via `http://localhost:8000` and CORS is preconfigured to allow `http://localhost:3000`:
+Two terminals, one for each repo. Web calls api via `http://localhost:8000` and CORS is preconfigured to allow `http://localhost:3000`:
 
 ```bash
-# terminal 1 — this repo
+# terminal 1 (this repo)
 docker compose up -d --build
 
-# terminal 2 — sibling wispr-web repo
+# terminal 2 (sibling wispr-web repo)
 cd ../wispr-web && pnpm dev
 ```
 
 Then open <http://localhost:3000>. Open the browser devtools network panel to confirm fetches against the api succeed.
 
-## Quickstart — native uv (DB + Redis still in compose)
+## Quickstart: native uv (DB + Redis still in compose)
 
 Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
 
@@ -66,9 +66,9 @@ uv run mypy app/ alembic/ tests/
 
 ## Production deploy
 
-The API is self-hosted: each project lives in `~/<project>/` with its own docker-compose and joins a shared external `web` Docker network. A separate `~/infra/` compose runs the front door — **Caddy** + **cloudflared** — and TLS terminates at the **Cloudflare edge** via the tunnel, so nothing on the host binds a public port.
+The API is self-hosted: each project lives in `~/<project>/` with its own docker-compose and joins a shared external `web` Docker network. A separate `~/infra/` compose runs the front door (**Caddy** + **cloudflared**), and TLS terminates at the **Cloudflare edge** via the tunnel, so nothing on the host binds a public port.
 
-- Public services join the external `web` network; private services (postgres, redis) stay on the project's default network — never exposed.
+- Public services join the external `web` network; private services (postgres, redis) stay on the project's default network, never exposed.
 - A `docker-compose.prod.yml` overlay layers production-only changes on the dev compose: the `prod` image (baked source, no dev deps), no host port bindings, `restart: unless-stopped`, and `env_file` to inject the deployment secrets into the api container.
 
 Bring it up on the host:
@@ -80,7 +80,7 @@ cd ~/wispr-api
 cp .env.example .env
 ```
 
-Fill in `.env` with the deployment secrets — a strong `POSTGRES_PASSWORD`, a `SERVER_PEPPER`, a base64 32-byte `KEY_VAULT_MASTER_V1`, and the Resend / Turnstile / R2 keys — plus the production URLs:
+Fill in `.env` with the deployment secrets (a strong `POSTGRES_PASSWORD`, a `SERVER_PEPPER`, a base64 32-byte `KEY_VAULT_MASTER_V1`, and the Resend / Turnstile / R2 keys), plus the production URLs:
 
 ```dotenv
 ENVIRONMENT=production
@@ -98,7 +98,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head
 ```
 
-Route it through the front door. In `~/infra/Caddyfile`, add a block matching the app's hostname and reverse-proxying to its service on the `web` network — TLS is handled upstream by Cloudflare, so serve plain HTTP:
+Route it through the front door. In `~/infra/Caddyfile`, add a block matching the app's hostname and reverse-proxying to its service on the `web` network. Cloudflare handles TLS upstream, so serve plain HTTP:
 
 ```caddyfile
 http://wispr-api.rushyendra.dev {
@@ -106,7 +106,7 @@ http://wispr-api.rushyendra.dev {
 }
 ```
 
-Reload Caddy (`docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`), then add `wispr-api.rushyendra.dev` as a public hostname on the Cloudflare tunnel pointing at `http://caddy:80`. Because the origin is reachable only through the tunnel, `CF-Connecting-IP` arrives trusted — no header-stripping guard is needed.
+Reload Caddy (`docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`), then add `wispr-api.rushyendra.dev` as a public hostname on the Cloudflare tunnel pointing at `http://caddy:80`. Because the origin is reachable only through the tunnel, `CF-Connecting-IP` arrives trusted, so no header-stripping guard is needed.
 
 ## Environment
 
