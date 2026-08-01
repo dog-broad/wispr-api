@@ -29,7 +29,7 @@ _NO_PROVIDER_KEYS = {
 @pytest.fixture(autouse=True)
 def _no_provider_calls() -> Iterator[None]:
     """Null every provider key so the dashboard never makes a real external call
-    during tests — the quota rows stay unknown (their intended local state)."""
+    during tests. The quota rows stay unknown (their intended local state)."""
     app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
         update=_NO_PROVIDER_KEYS
     )

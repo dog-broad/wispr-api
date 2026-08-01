@@ -262,7 +262,7 @@ async def _create_link(
             continue
         return CreateSnippetResponse(id=snippet_id, expires_at=expires_at)
 
-    # Exhausted retry budget — surface the underlying error as 500 so the
+    # Exhausted retry budget: surface the underlying error as 500 so the
     # operator notices an actual ID-space anomaly instead of seeing a
     # silent 5xx with no breadcrumbs.
     raise HTTPException(
@@ -320,7 +320,7 @@ async def _create_pin_share(
         try:
             await session.commit()
         except IntegrityError:
-            # PIN or id collided against a live row — reroll both.
+            # PIN or id collided against a live row: reroll both.
             await session.rollback()
             continue
         return CreatePinShareResponse(id=snippet.id, pin=pin, expires_at=expires_at)
@@ -339,7 +339,7 @@ async def _create_sync(
 ) -> CreateSyncResponse:
     """Create a Sync (Mode 4) item. Zero-knowledge: the server stores the
     wrapped DEK the client produced with its master KEK and never sees the DEK
-    or the KEK. No TTL / max_reads — these are the owner's own clips."""
+    or the KEK. No TTL / max_reads: these are the owner's own clips."""
     content = await _resolve_content(
         store,
         ciphertext=body.ciphertext,
@@ -430,7 +430,7 @@ async def resolve_by_pin(
                 content={"reason": "turnstile_failed"},
             )
 
-    # A live pairing takes the PIN namespace for its 60s window — signal pair.
+    # A live pairing takes the PIN namespace for its 60s window: signal pair.
     if await lookup_pairing(redis_client, body.pin) is not None:
         return PairSignalResponse()
 
@@ -507,7 +507,7 @@ async def get_snippet(
     if snippet is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-    # Terminal states bypass the password gate — the snippet is gone
+    # Terminal states bypass the password gate: the snippet is gone
     # regardless of whether the caller knows the password.
     gone_reason = _gone_reason_or_none(snippet)
     if gone_reason is not None:
@@ -549,8 +549,8 @@ async def verify_password(
 ) -> GetSnippetResponse | JSONResponse:
     """Validate a password attempt for a gated snippet.
 
-    On match, atomically bumps ``read_count`` and returns the ciphertext
-    — same shape as the unprotected ``GET /snippets/{id}``. Wrong
+    On match, atomically bumps ``read_count`` and returns the ciphertext,
+    the same shape as the unprotected ``GET /snippets/{id}``. Wrong
     attempts don't touch ``read_count`` so the rate-limited brute-forcer
     is the only thing that burns through their attempt budget.
     """
@@ -590,7 +590,7 @@ async def _load_snippet(session: AsyncSession, snippet_id: str) -> Snippet | Non
 def _gone_reason_or_none(snippet: Snippet) -> GoneReason | None:
     """Same predicate as the CAS uses, but for a pre-fetched row. Order
     matters: take-down by the operator outranks natural expiry which
-    outranks burn-out — the reasons are mutually exclusive in practice
+    outranks burn-out. The reasons are mutually exclusive in practice
     but the order is the priority we surface."""
     if snippet.taken_down_at is not None:
         return GoneReason.taken_down
@@ -627,7 +627,7 @@ async def _burn_cas(session: AsyncSession, snippet_id: str) -> Snippet | JSONRes
     session.expire_all()
 
     if updated_id is None:
-        # CAS failed between load and burn — race with another reader or the
+        # CAS failed between load and burn: race with another reader or the
         # purge job. Re-load to pick the most specific gone-reason.
         existing = await _load_snippet(session, snippet_id)
         if existing is None:
@@ -641,7 +641,7 @@ async def _burn_cas(session: AsyncSession, snippet_id: str) -> Snippet | JSONRes
     await session.commit()
     fresh = await _load_snippet(session, snippet_id)
     if fresh is None:
-        # Vanishingly rare — the purge ran between commit and re-read.
+        # Vanishingly rare: the purge ran between commit and re-read.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     # Notify any /ws/snippet/{id}/watch subscribers: read first (so live

@@ -78,7 +78,7 @@ def _link_body() -> dict[str, object]:
 
 
 async def test_create_endpoint_429s_when_budget_exhausted(
-    rate_limit_client: object,  # AsyncClient — typed loose to avoid an import cycle
+    rate_limit_client: object,  # AsyncClient, typed loose to avoid an import cycle
 ) -> None:
     """POST /snippets is capped at 20/hr/IP. Hammer it past 20 and the
     21st request must come back 429 with a Retry-After header."""

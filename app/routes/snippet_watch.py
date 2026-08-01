@@ -34,7 +34,7 @@ async def watch_snippet(
     """Live read-counter stream for the sender's SentState.
 
     Anyone with the snippet id can attach (no owner_token gate per
-    [D-260526-02]) — the watch surface leaks one meta-fact ("this
+    [D-260526-02]). The watch surface leaks one meta-fact ("this
     share has been read") that anyone with the URL learns anyway from
     a single GET attempt.
 
@@ -44,7 +44,7 @@ async def watch_snippet(
       3. Send an initial ``{op: "snapshot"}`` carrying the current
          read_count / max_reads / expires_at / gone reason if any.
       4. If the snippet is already gone, close immediately after the
-         snapshot — there's nothing to watch.
+         snapshot: there's nothing to watch.
       5. Subscribe to the bus and stream events as they arrive. The
          connection holds until the client disconnects, the snippet
          hits a terminal state, or expiry fires.
@@ -60,7 +60,7 @@ async def watch_snippet(
     await _safe_send(websocket, snapshot)
 
     if gone_reason is not None:
-        # Nothing to watch — surface the terminal state and close.
+        # Nothing to watch: surface the terminal state and close.
         await _safe_send(websocket, _gone_payload(gone_reason))
         with contextlib.suppress(RuntimeError):
             await websocket.close(code=_CLOSE_NORMAL, reason=gone_reason)
@@ -147,7 +147,7 @@ def _event_payload(event: WatchEvent) -> dict[str, Any]:
 
 async def _forward_events(websocket: WebSocket, snippet_id: str) -> None:
     """Drain the bus subscription, ship each event to the client, and
-    stop after a gone event — no point streaming further."""
+    stop after a gone event: no point streaming further."""
     async for event in watch_bus.listen(snippet_id):
         payload = _event_payload(event)
         await _safe_send(websocket, payload)
@@ -158,7 +158,7 @@ async def _forward_events(websocket: WebSocket, snippet_id: str) -> None:
 async def _drain_incoming(websocket: WebSocket) -> None:
     """The protocol is server-push only; we don't expect client frames.
     We still need to drain inbound data so the WS receive loop notices
-    a remote close — without this, the forwarder happily runs into a
+    a remote close. Without this, the forwarder happily runs into a
     half-closed socket."""
     while True:
         try:

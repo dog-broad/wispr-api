@@ -30,7 +30,7 @@ async def record_action(
 ) -> None:
     """Append an admin action to the audit log within the caller's transaction.
 
-    Adds the row to ``session`` but does not commit — so the audit entry lands
+    Adds the row to ``session`` but does not commit, so the audit entry lands
     atomically with the action it records (a rolled-back action leaves no
     phantom entry; a committed one is never missing its log). The caller commits.
     """

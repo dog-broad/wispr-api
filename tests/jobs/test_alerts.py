@@ -82,7 +82,7 @@ async def test_alert_throttled_within_the_hour(db_session: AsyncSession) -> None
     dashboard = _dashboard(MetricStatus.alert)
 
     first = await send_metric_alerts(db_session, dashboard, capture, "https://x", _NOW)
-    # 30 min later — still inside the 1 h window.
+    # 30 min later, still inside the 1 h window.
     second = await send_metric_alerts(
         db_session, dashboard, capture, "https://x", _NOW + timedelta(minutes=30)
     )
@@ -107,7 +107,7 @@ async def test_no_email_when_opted_out(db_session: AsyncSession) -> None:
 async def test_no_email_when_metric_not_alerting(db_session: AsyncSession) -> None:
     await _admin_with_pref(db_session, enabled=True)
     capture = _Capture()
-    # Same opted-in admin, but the metric is only at warn — no alert email.
+    # Same opted-in admin, but the metric is only at warn, so no alert email.
     sent = await send_metric_alerts(
         db_session, _dashboard(MetricStatus.warn), capture, "https://x", _NOW
     )

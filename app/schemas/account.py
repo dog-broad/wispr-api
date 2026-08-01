@@ -33,7 +33,7 @@ class OkResponse(BaseModel):
 
 # --- data export (M19) --------------------------------------------------------
 # ``ciphertext`` is null + ``stored`` true for R2-backed file content, whose
-# bytes aren't embedded — its encrypted_metadata (name/mime) still is, and it
+# bytes aren't embedded; its encrypted_metadata (name/mime) still is, and it
 # can be re-downloaded while the service is up.
 
 

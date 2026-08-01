@@ -180,6 +180,6 @@ async def delete_snippet(snippet_id: str, user: CurrentUser, session: DbSession)
 
 @router.post("/snippets/{snippet_id}/burn", status_code=status.HTTP_204_NO_CONTENT)
 async def burn_snippet(snippet_id: str, user: CurrentUser, session: DbSession) -> Response:
-    """Alias of delete as a POST action — hard-delete an owned snippet now."""
+    """Alias of delete as a POST action: hard-delete an owned snippet now."""
     await _delete_owned(session, snippet_id, user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

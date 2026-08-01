@@ -154,7 +154,7 @@ async def set_alert_preference(
     body: AlertPrefRequest, admin: AdminUser, session: DbSession
 ) -> AlertPrefResponse:
     """Opt this admin in/out of red-state email alerts for one metric. Personal
-    preference — upserted for the caller only, not audited."""
+    preference: upserted for the caller only, not audited."""
     if body.metric not in CAPPED_QUOTA_KEYS:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown metric")
     row = await session.scalar(

@@ -27,7 +27,7 @@ async def purge_expired(
     the R2 chunk objects of any expired file-backed snippets.
 
     Returns the number of rows deleted. Rows with a null ``expires_at`` are
-    left alone — link mode always sets one, but sync keeps snippets until the
+    left alone: link mode always sets one, but sync keeps snippets until the
     owner removes them, and the purge job should never touch those.
     """
     async with session_factory() as session:

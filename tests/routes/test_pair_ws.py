@@ -103,7 +103,7 @@ def test_duplicate_sender_for_same_pin_rejected(
 
     with (
         ws_client.websocket_connect("/ws/pair?pin=1234&sender_token=tok-abc"),
-        # Second sender on the same PIN — registry refuses.
+        # Second sender on the same PIN: registry refuses.
         ws_client.websocket_connect("/ws/pair?pin=1234&sender_token=tok-abc") as second,
     ):
         msg = _recv_json(second)
@@ -175,7 +175,7 @@ def test_receiver_malformed_envelope_is_rejected(ws_client: TestClient) -> None:
 
 def test_oversized_redeem_frame_is_rejected(ws_client: TestClient) -> None:
     with ws_client.websocket_connect("/ws/pair") as receiver:
-        # 17 KiB of payload — over the 16 KiB cap.
+        # 17 KiB of payload, over the 16 KiB cap.
         oversized = json.dumps(
             {"op": "redeem", "pin": "1234", "junk": "x" * (17 * 1024)},
             separators=(",", ":"),

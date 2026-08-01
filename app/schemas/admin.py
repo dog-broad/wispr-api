@@ -25,7 +25,7 @@ class KillSwitchState(BaseModel):
 
 
 class MaintenanceState(BaseModel):
-    """Public — read by the web to decide whether to show the maintenance
+    """Public: read by the web to decide whether to show the maintenance
     banner. Carries no auth-sensitive data."""
 
     enabled: bool
@@ -72,7 +72,7 @@ class AlertPrefResponse(BaseModel):
 
 # --- admin actions -----------------------------------------------------------
 
-# Broadcast subject/body caps — keep a runaway paste from becoming a giant send.
+# Broadcast subject/body caps: keep a runaway paste from becoming a giant send.
 BROADCAST_SUBJECT_MAX = 200
 BROADCAST_BODY_MAX = 10_000
 
@@ -92,8 +92,8 @@ class BroadcastRequest(BaseModel):
 
     subject: str = Field(min_length=1, max_length=BROADCAST_SUBJECT_MAX)
     body: str = Field(min_length=1, max_length=BROADCAST_BODY_MAX)
-    # First call previews (no send, no re-auth). Set true — with the current
-    # passphrase's auth token — to actually send.
+    # First call previews (no send, no re-auth). Set true (with the current
+    # passphrase's auth token) to actually send.
     confirm: bool = False
     current_auth_token: str | None = None
 

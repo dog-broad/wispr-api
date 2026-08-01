@@ -14,7 +14,7 @@
 #   convention and the postgres-ports leak warning from harmonia.
 # - api builds the `prod` Dockerfile stage (no --reload, no dev deps,
 #   source baked into the image).
-# - Source bind-mount is dropped — the image's own code is what runs.
+# - Source bind-mount is dropped: the image's own code is what runs.
 
 services:
   api:
@@ -30,7 +30,7 @@ services:
       - .env
     # !reset wipes the inherited list from docker-compose.yml; bare
     # `ports: []` would only APPEND nothing, which leaves the dev
-    # 8000:8000 binding in place. Same applies to volumes — we drop
+    # 8000:8000 binding in place. Same applies to volumes: we drop
     # the source bind-mount so the prod image's own code is what runs.
     ports: !reset []
     volumes: !reset []
@@ -50,7 +50,7 @@ services:
 
   redis:
     restart: unless-stopped
-    # Same as db — keep redis off the host port plane.
+    # Same as db: keep redis off the host port plane.
     ports: !reset []
     networks:
       - default

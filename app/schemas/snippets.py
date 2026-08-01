@@ -38,7 +38,7 @@ Base64Field = Annotated[
 ]
 
 # Anonymous link payload caps. The 256 KiB inline-file ceiling
-# ([PROJECT.md §10 M2] / §6) drives the ciphertext bound — raw bytes
+# ([PROJECT.md §10 M2] / §6) drives the ciphertext bound: raw bytes
 # plus a 12-byte IV + 16-byte AES-GCM tag fit within 257 KiB; we pad
 # to 264 KiB so a small amount of base64-decoding slack doesn't
 # bounce a legitimate request. Chunked file uploads (R2) push this
@@ -146,7 +146,7 @@ PIN_MAX_READS_CEILING = 1000
 class CreatePinShareSnippetRequest(BaseModel):
     """Body for `POST /snippets` when share_mode=pin_share (members only).
 
-    Unlike link, the client sends the raw ``content_key`` — Mode 2 is
+    Unlike link, the client sends the raw ``content_key``: Mode 2 is
     encryption-at-rest under operator trust, not zero-knowledge. The server
     wraps the key with the key-vault master before storing it.
     """
@@ -253,7 +253,7 @@ class CreateSyncResponse(BaseModel):
 class SyncItem(BaseModel):
     id: str
     content_type: ContentType
-    # Empty for a file-backed clip — its ciphertext lives in R2 as ``chunk_count``
+    # Empty for a file-backed clip: its ciphertext lives in R2 as ``chunk_count``
     # objects, fetched on demand via GET /me/snippets/{id}/file.
     ciphertext: Base64Field
     wrapped_dek: Base64Field
@@ -294,7 +294,7 @@ class ByPinRequest(BaseModel):
 
 class PinResolveResponse(BaseModel):
     """200 body for a resolved Mode 2 PIN. Carries the server-unwrapped content
-    key alongside the ciphertext — the client decrypts locally."""
+    key alongside the ciphertext: the client decrypts locally."""
 
     mode: Literal["pin_share"] = "pin_share"
     id: str
@@ -313,7 +313,7 @@ class PinResolveResponse(BaseModel):
 
 
 class PairSignalResponse(BaseModel):
-    """200 body when the PIN matches a live Mode 3 pairing — the client opens
+    """200 body when the PIN matches a live Mode 3 pairing: the client opens
     the pair WebSocket rather than fetching content."""
 
     mode: Literal["pair"] = "pair"
@@ -343,7 +343,7 @@ class PasswordRequiredResponse(BaseModel):
     """401 body for `GET /snippets/{id}` when the snippet is gated by
     a password. The client uses ``password_salt`` to recompute its
     PBKDF2 hash before calling ``verify-password``. The salt is not a
-    secret — see [D-260526-01]."""
+    secret (see [D-260526-01])."""
 
     status: Literal["password_required"] = "password_required"
     password_salt: Base64Field

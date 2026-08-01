@@ -10,7 +10,7 @@ from app.schemas.snippets import SyncItem
 # In-process pub/sub for the Sync feed, keyed by user id. Snippet create /
 # delete publish an event to the owner's topic; a /ws/sync subscriber for that
 # user streams it so the /me feed updates live. Single-VM only, same as the
-# watch bus — cross-host would need Redis pub/sub.
+# watch bus; cross-host would need Redis pub/sub.
 
 
 @dataclass(frozen=True, slots=True)

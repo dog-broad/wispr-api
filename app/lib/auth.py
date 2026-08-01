@@ -129,7 +129,7 @@ def is_allowed_origin(origin: str, settings: Settings) -> bool:
 def enforce_origin(request: Request) -> None:
     """CSRF defense-in-depth on state-changing routes: reject a cross-origin
     ``Origin``. Requests without an Origin header (same-origin navigations,
-    server-to-server) are allowed — SameSite=Lax already blocks the cross-site
+    server-to-server) are allowed: SameSite=Lax already blocks the cross-site
     cookie-bearing case this backstops."""
     origin = request.headers.get("origin")
     if origin is None:

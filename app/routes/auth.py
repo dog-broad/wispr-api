@@ -84,7 +84,7 @@ async def request_magic_link(
     redis_client: RedisDep,
 ) -> MagicLinkResponse | JSONResponse:
     """Request a magic link. Always returns ``{ok: true}`` regardless of
-    whether the email maps to an account or the invite is valid — the only
+    whether the email maps to an account or the invite is valid; the only
     observable difference is whether an email actually arrives. Existing
     accounts get a sign-in link; a valid unused invite for a new email gets a
     sign-up link; anything else is a silent no-op."""
@@ -197,7 +197,7 @@ async def verify(
 
     token_row.consumed_at = datetime.now(tz=UTC)
 
-    # An email-change link confirms a pending change and returns — it does not
+    # An email-change link confirms a pending change and returns; it does not
     # start a session (the user is already signed in on the device that
     # requested it; the link only proves control of the new address).
     if token_row.purpose is MagicLinkPurpose.change_email:
@@ -449,7 +449,7 @@ async def change_passphrase(
     ``wrapped_dek`` with the client's re-wrapped value.
 
     Changing ``master_key_salt`` makes the old KEK unrecoverable, so the rewrap
-    set must cover the caller's exact current Sync items (409 if it drifted) —
+    set must cover the caller's exact current Sync items (409 if it drifted);
     otherwise a missed item would be stranded undecryptable. Wrong current
     passphrase counts toward the same lockout as unlock so this can't be used to
     brute-force."""
@@ -523,7 +523,7 @@ async def logout(
     db: DbSession,
     settings: SettingsDep,
 ) -> Response:
-    """Invalidate the current session and clear the cookie. Idempotent — a
+    """Invalidate the current session and clear the cookie. Idempotent: a
     missing or unknown cookie still returns 204."""
     enforce_origin(request)
     response = Response(status_code=status.HTTP_204_NO_CONTENT)

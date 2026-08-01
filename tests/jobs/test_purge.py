@@ -82,7 +82,7 @@ async def test_purge_leaves_null_expiry_rows(
     """Rows without a TTL are never auto-purged. Link mode always sets
     one; this is defense-in-depth for sync mode which keeps rows
     indefinitely."""
-    # Direct SQL — link mode would normally require an expires_at, but the
+    # Direct SQL: link mode would normally require an expires_at, but the
     # null-purge guarantee must hold regardless of which mode wrote the row.
     await db_session.execute(
         sa_text(
@@ -103,7 +103,7 @@ async def test_purge_keeps_burned_but_unexpired(
     db_session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """A read-once link that has been consumed but whose TTL has not yet
-    passed must stay in the table — the GET handler needs it to return
+    passed must stay in the table: the GET handler needs it to return
     410 burned (per the UX spec, "this is gone" not "404")."""
     now = datetime.now(tz=UTC)
     db_session.add(

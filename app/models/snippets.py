@@ -39,8 +39,8 @@ class ContentType(enum.StrEnum):
 class Snippet(Base):
     """A unit of shared content.
 
-    One table covers all four share modes — anonymous Link, member PIN-share,
-    live Pair, and personal Sync — with mode-specific columns nullable and
+    One table covers all four share modes (anonymous Link, member PIN-share,
+    live Pair, and personal Sync) with mode-specific columns nullable and
     guarded by CHECK constraints. M1 only exercises ``share_mode='link'``;
     the pin-share and sync columns exist from day one so later phases can
     fill them in without a destructive migration.
@@ -113,7 +113,7 @@ class Snippet(Base):
     taken_down_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        # Mode invariants — encoded so a misuse from the application layer
+        # Mode invariants: encoded so a misuse from the application layer
         # surfaces as a constraint violation, not a silent inconsistency.
         CheckConstraint(
             "share_mode <> 'link' OR ("

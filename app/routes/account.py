@@ -87,7 +87,7 @@ async def list_sessions(
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_session(session_id: uuid.UUID, user: CurrentUser, session: DbSession) -> Response:
-    """Sign out one device. Scoped to the caller's own sessions — a 404 both
+    """Sign out one device. Scoped to the caller's own sessions: a 404 both
     covers not-found and masks another user's session ids. Revoking the current
     device is allowed (the next request simply finds no session)."""
     result = await session.execute(
@@ -270,7 +270,7 @@ async def delete_account(
             for i in range(chunk_count or 0)
         ]
         if keys:
-            # Best-effort — the orphan janitor sweeps anything left behind.
+            # Best-effort: the orphan janitor sweeps anything left behind.
             with contextlib.suppress(Exception):
                 await store.delete_keys(keys)
 
@@ -318,7 +318,7 @@ async def export_data(
 ) -> ExportBundle | JSONResponse:
     """A full download of the caller's clips (Sync + owned PIN-shares), plus the
     master-key salt so an offline decryptor can re-derive the KEK. File-backed
-    content ships as metadata + ``stored:true`` — its ciphertext lives in object
+    content ships as metadata + ``stored:true``; its ciphertext lives in object
     storage, not the bundle, and is re-downloadable while the service is up.
     Limited to 3/day per user."""
     budget = await consume_export(redis_client, user.id)
@@ -395,7 +395,7 @@ async def export_data(
 
 @router.post("/invites", response_model=InviteResponse)
 async def create_invite(user: CurrentUser, session: DbSession) -> InviteResponse:
-    """Mint a single-use invite code. Admin only — signup stays invite-gated."""
+    """Mint a single-use invite code. Admin only; signup stays invite-gated."""
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin only")
     for _ in range(_INVITE_RETRIES):

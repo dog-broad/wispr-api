@@ -1,6 +1,6 @@
 """Bootstrap the first admin account and issue invite code(s).
 
-Accounts are invite-only, and invites are issued by admins — so a fresh
+Accounts are invite-only, and invites are issued by admins, so a fresh
 database has no way in. Run this once per deployment to create the founding
 admin and mint the first invite(s):
 

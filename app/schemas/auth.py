@@ -47,17 +47,17 @@ class MagicLinkResponse(BaseModel):
 
 class VerifyResponse(BaseModel):
     email: str
-    # True when the account has no passphrase yet — the client routes to
+    # True when the account has no passphrase yet: the client routes to
     # first-time setup rather than the per-session prompt.
     needs_passphrase_setup: bool
-    # True when this link confirmed an email change (not a sign-in) — the client
+    # True when this link confirmed an email change (not a sign-in): the client
     # shows a "your email is now X" confirmation and doesn't route to setup.
     email_changed: bool = False
 
 
 class ChangeEmailRequest(BaseModel):
     new_email: str
-    # Re-auth proof (current passphrase's auth token). Required — changing the
+    # Re-auth proof (current passphrase's auth token). Required: changing the
     # email is account-recovery-sensitive, so the session cookie alone isn't
     # enough. The account must have a passphrase set.
     current_auth_token: Base64Field = Field(..., max_length=64)

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from redis.asyncio import Redis
 
-# Mode 3 pairings live in Redis only — they are P2P-transient and the
+# Mode 3 pairings live in Redis only: they are P2P-transient and the
 # server is only involved during the 60-second handshake window. The
 # layout uses two keys per active pair, both with the same TTL:
 #

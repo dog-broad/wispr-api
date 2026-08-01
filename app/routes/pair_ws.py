@@ -87,7 +87,7 @@ async def _run_sender(ws: WebSocket, pin: str, sender_token: str, redis_client: 
     try:
         await _sender_loop(ws, pair.pin)
     except WebSocketDisconnect:
-        # Sender hung up — fall through to cleanup.
+        # Sender hung up; fall through to cleanup.
         pass
     finally:
         active = await registry.remove(pair.pin)
@@ -260,7 +260,7 @@ async def _fail_and_close(
     ws: WebSocket, reason: PairFailReason, *, retry_after: int | None = None
 ) -> None:
     """Send a ``pair_failed`` envelope and close the socket. Best effort
-    on the send — if the client has already dropped, the close attempt
+    on the send; if the client has already dropped, the close attempt
     still runs."""
     payload: dict[str, Any] = {"op": _OP_PAIR_FAILED, "reason": str(reason)}
     if retry_after is not None:

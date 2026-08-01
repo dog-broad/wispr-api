@@ -26,7 +26,7 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 _CLOSE_NORMAL = 1000
 _CLOSE_POLICY = 1008
 # Push cadence. The dashboard data itself only refreshes every 30 s (the cache
-# TTL), so most ticks find no change and send nothing — the tick just checks.
+# TTL), so most ticks find no change and send nothing; the tick just checks.
 _TICK_SECONDS = 5.0
 
 
@@ -99,7 +99,7 @@ async def _push_dashboard(websocket: WebSocket, session: AsyncSession, settings:
     last_actions: list[dict[str, Any]] | None = None
     while True:
         payload = await load_dashboard(session, redis, http_client, settings)
-        # Reads only — drop any transaction snapshot so the long-lived session
+        # Reads only: drop any transaction snapshot so the long-lived session
         # sees fresh data on the next build.
         await session.rollback()
         flat = _flatten(payload)

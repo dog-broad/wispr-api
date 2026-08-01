@@ -16,8 +16,8 @@ _SEND_TIMEOUT_SECONDS = 10.0
 
 @dataclass(frozen=True, slots=True)
 class EmailMessage:
-    """A plain-text transactional email. HTML bodies are intentionally omitted
-    — every message we send (magic links, sign-in audits, deletion notices) is
+    """A plain-text transactional email. HTML bodies are intentionally omitted:
+    every message we send (magic links, sign-in audits, deletion notices) is
     a short line of text plus a link, and plain text sidesteps a whole class of
     rendering and phishing-lookalike concerns."""
 
@@ -33,7 +33,7 @@ class EmailTransport(Protocol):
 class LogTransport:
     """Dev fallback used whenever no Resend API key is configured.
 
-    Writes the full message — crucially including any magic-link URL — to the
+    Writes the full message (crucially including any magic-link URL) to the
     app log instead of sending, so the auth flow can be driven end-to-end
     locally without an email provider. Never selected when an API key is set.
     """

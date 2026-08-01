@@ -154,7 +154,7 @@ snippets_create_anon_limit = rate_limit(
 )
 snippets_get_limit = rate_limit(_SNIPPETS_GET_BURST, _SNIPPETS_GET_WINDOW, "snippets-get")
 pair_create_limit = rate_limit(_PAIR_CREATE_BURST, _PAIR_CREATE_WINDOW, "pair-create")
-# File-upload presign — same per-IP ceiling as snippet create (§6).
+# File-upload presign: same per-IP ceiling as snippet create (§6).
 files_presign_limit = rate_limit(_SNIPPETS_CREATE_BURST, _SNIPPETS_CREATE_WINDOW, "files-presign")
 
 # Magic-link requests are limited two ways: 10/hr/IP and 3/hr/email. The IP
@@ -196,7 +196,7 @@ async def consume_export(redis_client: Redis, user_id: object) -> TokenBucketRes
 
 # Per-(IP, snippet) rate limit for password verification. PROJECT.md
 # §12: 5/min/IP/snippet. The bucket key embeds the snippet id so a
-# rate-limited IP can still verify other snippets it has links to —
+# rate-limited IP can still verify other snippets it has links to;
 # the threat is brute-forcing one snippet's gate, not a generic
 # verify-endpoint abuse.
 _VERIFY_PASSWORD_BURST, _VERIFY_PASSWORD_WINDOW = burst_per_period(5, "minute")

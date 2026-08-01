@@ -35,7 +35,7 @@ def upgrade() -> None:
         ),
         # Nullable + SET NULL so the report outlives its snippet (audit record).
         sa.Column("snippet_id", sa.String(length=12), nullable=True),
-        # SHA-256 hex of the peppered reporter IP — 64 chars; rate-limit only.
+        # SHA-256 hex of the peppered reporter IP (64 chars); rate-limit only.
         sa.Column("reporter_ip", sa.String(length=64), nullable=False),
         sa.Column("reporter_user_id", sa.UUID(), nullable=True),
         sa.Column(
@@ -102,7 +102,7 @@ def downgrade() -> None:
     )
     op.drop_index("ix_reports_snippet_id", table_name="reports")
     op.drop_table("reports")
-    # Drop the ENUM types last — dropping the table removes the column
+    # Drop the ENUM types last: dropping the table removes the column
     # references, not the type definitions, so a re-upgrade would otherwise
     # fail with "type already exists".
     sa.Enum(name="report_resolution").drop(op.get_bind(), checkfirst=False)

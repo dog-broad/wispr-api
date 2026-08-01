@@ -198,7 +198,7 @@ def ws_redis() -> Iterator[sync_redis.Redis]:
     The async Redis client lazily binds its connection pool to whichever
     asyncio loop first awaits it. WebSocket tests use Starlette's
     ``TestClient`` which runs the ASGI app on its own anyio portal loop,
-    distinct from pytest-asyncio's session loop — so the route's async
+    distinct from pytest-asyncio's session loop, so the route's async
     Redis calls must happen on the portal loop, not the pytest one.
 
     Test setup therefore seeds redis through the sync client (no loop
@@ -215,7 +215,7 @@ def ws_redis() -> Iterator[sync_redis.Redis]:
 
 @contextlib.asynccontextmanager
 async def _redis_only_lifespan(app_: object) -> AsyncIterator[None]:
-    """Lifespan for WS tests — opens redis on the portal loop, skips
+    """Lifespan for WS tests: opens redis on the portal loop, skips
     the snippets-purge task.
 
     Two reasons this exists:

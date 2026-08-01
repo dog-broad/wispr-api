@@ -39,7 +39,7 @@ def bucket_key(ip: str) -> str:
     """Stable key for rate-limit bucketing.
 
     IPv4 addresses are used verbatim. IPv6 addresses are bucketed by their
-    /64 prefix — individual v6 addresses are too cheap to rotate to make
+    /64 prefix: individual v6 addresses are too cheap to rotate to make
     per-address limits meaningful. Unparseable inputs (including the empty
     string returned by ``extract_client_ip`` when no client is attached)
     are passed through unchanged so the caller still gets a deterministic

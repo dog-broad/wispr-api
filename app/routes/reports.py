@@ -61,7 +61,7 @@ async def _record_report(redis_client: Redis, ip: str) -> None:
 
 def _hash_reporter_ip(ip: str, pepper: str | None) -> str:
     """SHA-256 of the peppered IP. Stored only to rate-limit and de-duplicate
-    reporters — never reversed. Reuses the deployment pepper (empty in dev)."""
+    reporters, never reversed. Reuses the deployment pepper (empty in dev)."""
     return hashlib.sha256(f"{pepper or ''}:{ip}".encode()).hexdigest()
 
 
@@ -76,7 +76,7 @@ async def create_report(
     http_client: HttpClient,
     _: Annotated[None, Depends(reports_limit)],
 ) -> ReportAcceptedResponse | JSONResponse:
-    """File a takedown report against a PIN-share. Public — an anonymous
+    """File a takedown report against a PIN-share. Public: an anonymous
     receiver or a signed-in one may report. Above the per-IP hourly threshold a
     Turnstile token is required; the report must reference a live PIN-share."""
     ip = extract_client_ip(request)

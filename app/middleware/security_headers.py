@@ -6,7 +6,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-# The header set is fixed per PROJECT.md §3 — the api returns the same
+# The header set is fixed per PROJECT.md §3; the api returns the same
 # strict policy as Caddy so a misconfigured proxy can't silently weaken
 # the posture. CSP includes the production hostnames for `connect-src`;
 # browsers don't apply CSP to JSON responses, so the policy mainly
@@ -38,7 +38,7 @@ _HEADERS: dict[str, str] = {
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Append the strict security-header set to every response.
 
-    Existing values are preserved — the api never overrides a header an
+    Existing values are preserved: the api never overrides a header an
     upstream layer (Caddy, downstream FastAPI middleware) has already
     chosen. New headers fall through verbatim.
     """

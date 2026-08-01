@@ -235,7 +235,7 @@ async def test_get_password_protected_returns_401_with_salt(
 
 
 async def test_get_password_protected_does_not_burn(db_client: AsyncClient) -> None:
-    """A wrong-password GET must NOT consume the read budget — otherwise
+    """A wrong-password GET must NOT consume the read budget; otherwise
     a single failed attempt would torch a max_reads=1 snippet."""
     snippet_id = await _create_with_password(db_client)
     for _ in range(5):

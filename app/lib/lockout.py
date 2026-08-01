@@ -46,7 +46,7 @@ async def register_failure(db: AsyncSession, user_id: uuid.UUID, now: datetime) 
         row = PassphraseLockout(user_id=user_id, failed_attempts=1, window_started_at=now)
         db.add(row)
     elif now - row.window_started_at > LOCK_WINDOW:
-        # Window elapsed — start a fresh count.
+        # Window elapsed, start a fresh count.
         row.window_started_at = now
         row.failed_attempts = 1
     else:

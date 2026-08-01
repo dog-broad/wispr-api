@@ -8,9 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.reports import ReportReasonCategory, ReportResolution
 from app.models.snippets import ContentType
 
-# Free-text explanation cap — 1 KiB, matched by a CHECK constraint on the column.
+# Free-text explanation cap: 1 KiB, matched by a CHECK constraint on the column.
 REASON_TEXT_MAX_LEN = 1024
-# Operator's resolution note cap — same ceiling as the reporter's detail.
+# Operator's resolution note cap: same ceiling as the reporter's detail.
 RESOLUTION_NOTES_MAX_LEN = 1024
 
 
@@ -28,7 +28,7 @@ class CreateReportRequest(BaseModel):
 
 
 class ReportAcceptedResponse(BaseModel):
-    """201 body. Deliberately opaque — filing a report reveals nothing about the
+    """201 body. Deliberately opaque: filing a report reveals nothing about the
     snippet beyond the fact that it existed as a PIN-share when reported."""
 
     ok: bool = True
@@ -39,7 +39,7 @@ class ReportAcceptedResponse(BaseModel):
 
 class AdminReportItem(BaseModel):
     """A pending report as the operator sees it: the reporter's reason plus a
-    summary of the referenced snippet. Content is not decrypted here — that's a
+    summary of the referenced snippet. Content is not decrypted here: that's a
     separate operator-console concern."""
 
     id: uuid.UUID
@@ -49,7 +49,7 @@ class AdminReportItem(BaseModel):
     created_at: datetime
     # True when a signed-in member filed it (vs an anonymous receiver).
     from_member: bool
-    # Snippet summary — null/false when the referenced row is already gone
+    # Snippet summary: null/false when the referenced row is already gone
     # (purged or the owner's account was deleted, which nulls snippet_id).
     snippet_present: bool
     snippet_content_type: ContentType | None

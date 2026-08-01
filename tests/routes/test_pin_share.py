@@ -101,7 +101,7 @@ async def test_pin_share_unlimited_reads_allowed(
 
 
 async def test_link_create_still_anonymous(db_client: AsyncClient) -> None:
-    # No auth cookie — link creation must still work and carry no PIN.
+    # No auth cookie: link creation must still work and carry no PIN.
     resp = await db_client.post(
         "/snippets",
         json={

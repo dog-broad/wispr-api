@@ -9,7 +9,7 @@ from typing import Literal
 # route publishes a read or gone event when a snippet's state changes;
 # WebSocket subscribers receive the event and stream it to the sender.
 #
-# Single-VM deployment means an in-process bus is enough — cross-host
+# Single-VM deployment means an in-process bus is enough; cross-host
 # fan-out would need Redis pub/sub but isn't on the M2 path. The
 # registry is the live state; the durable Snippet row is the truth
 # source for everything else (snapshot read on attach, gone reasons).
@@ -38,7 +38,7 @@ class WatchBus:
     snippet ends or the WebSocket closes.
 
     Concurrency: every mutation guards the ``_subscribers`` map with a
-    single lock. Per-subscriber queues are unbounded — events are tiny
+    single lock. Per-subscriber queues are unbounded: events are tiny
     and the publisher should never block on a slow consumer.
     """
 
@@ -56,8 +56,8 @@ class WatchBus:
         self, snippet_id: str
     ) -> tuple[asyncio.Queue[WatchEvent], asyncio.Lock]:
         """Register a listener and return its queue. Callers should
-        use ``listen()`` instead of touching the queue directly — it
-        wires the cleanup correctly when the listener task ends."""
+        use ``listen()`` instead of touching the queue directly, since
+        it wires the cleanup correctly when the listener task ends."""
         queue: asyncio.Queue[WatchEvent] = asyncio.Queue()
         async with self._lock:
             self._subscribers.setdefault(snippet_id, set()).add(queue)

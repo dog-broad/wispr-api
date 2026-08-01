@@ -10,7 +10,7 @@ class MetricStatus(enum.StrEnum):
     ok = "ok"
     warn = "warn"
     alert = "alert"
-    # Source not wired / unreachable — the console renders a yellow "?" with the
+    # Source not wired / unreachable: the console renders a yellow "?" with the
     # detail as a tooltip. Never a silent green.
     unknown = "unknown"
 
@@ -21,7 +21,7 @@ class Metric(BaseModel):
     status: MetricStatus
     # Human-readable display value ("4 conns", "38 MB", "up"); None when unknown.
     value: str | None = None
-    # Tooltip / reason — e.g. why a metric is unknown.
+    # Tooltip / reason: e.g. why a metric is unknown.
     detail: str | None = None
 
 
@@ -40,7 +40,7 @@ class AuditEntry(BaseModel):
 
 class DashboardResponse(BaseModel):
     generated_at: datetime
-    # Worst status across all metrics (unknown does not count) — drives the banner.
+    # Worst status across all metrics (unknown does not count): drives the banner.
     status: MetricStatus
     quotas: list[QuotaMetric]
     health: list[Metric]
@@ -58,6 +58,6 @@ class QuotaHistoryPoint(BaseModel):
 class QuotaHistoryResponse(BaseModel):
     metric: str
     # False when the metric has no reconstructable 7-day series yet (provider
-    # usage without a snapshot store) — the drill-down shows "no history".
+    # usage without a snapshot store): the drill-down shows "no history".
     available: bool
     points: list[QuotaHistoryPoint]

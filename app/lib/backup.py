@@ -13,7 +13,7 @@ async def run_pg_dump(database_url: str) -> bytes:
 
     Isolated behind its own function so the upload/audit path can be tested
     without a live ``pg_dump`` binary. The URL is passed as a single argument
-    (SQLAlchemy's ``+asyncpg`` driver suffix stripped — pg_dump wants a plain
+    (SQLAlchemy's ``+asyncpg`` driver suffix stripped; pg_dump wants a plain
     ``postgresql://`` DSN)."""
     dsn = database_url.replace("+asyncpg", "")
     proc = await asyncio.create_subprocess_exec(

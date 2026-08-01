@@ -9,7 +9,7 @@ from app.lib.clientip import bucket_key, extract_client_ip
 
 
 def _make_request(headers: dict[str, str] | None = None, client_host: str | None = None) -> Request:
-    """Build a Starlette Request directly — we only need the scope shape,
+    """Build a Starlette Request directly: we only need the scope shape,
     no transport or application instance."""
     raw_headers = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
     scope: dict[str, Any] = {
@@ -60,7 +60,7 @@ def test_bucket_key_ipv4_passes_through(ipv4: str) -> None:
         ("2001:db8:abcd:0012:3456:789a:bcde:f012", "2001:db8:abcd:12::"),
         # The address is already a /64 boundary
         ("2001:db8::", "2001:db8::"),
-        # Variant low bits — bucket key should be identical
+        # Variant low bits, bucket key should be identical
         ("2001:db8:abcd:0012:ffff:ffff:ffff:ffff", "2001:db8:abcd:12::"),
     ],
 )

@@ -336,7 +336,7 @@ _DERIVABLE_HISTORY = {"snippets", "signups"}
 async def build_quota_history(session: AsyncSession, metric: str) -> QuotaHistoryResponse:
     if metric not in _DERIVABLE_HISTORY:
         # Provider usage has no historical row to derive from until a snapshot
-        # store exists — surface "no history" rather than a fake series.
+        # store exists; surface "no history" rather than a fake series.
         return QuotaHistoryResponse(metric=metric, available=False, points=[])
 
     now = datetime.now(tz=UTC)

@@ -37,7 +37,7 @@ async def test_locks_after_threshold(db_session: AsyncSession) -> None:
 async def test_window_resets_after_15_min(db_session: AsyncSession) -> None:
     uid = await _make_user(db_session)
     await _fail_n(db_session, uid, LOCK_THRESHOLD - 1, _T0)
-    # One more, but 16 minutes later — the window resets, so this is attempt #1.
+    # One more, but 16 minutes later: the window resets, so this is attempt #1.
     r = await register_failure(db_session, uid, _T0 + timedelta(minutes=16))
     assert not r.locked
 
@@ -55,7 +55,7 @@ async def test_lockout_email_throttled_to_one_per_24h(db_session: AsyncSession) 
         second = await register_failure(db_session, uid, _T0 + timedelta(hours=2))
     assert second is not None and second.locked and not second.send_email
 
-    # Past 24h since the first email — a new alert is allowed.
+    # Past 24h since the first email: a new alert is allowed.
     third = None
     for _ in range(LOCK_THRESHOLD):
         third = await register_failure(db_session, uid, _T0 + timedelta(hours=25))

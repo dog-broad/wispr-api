@@ -48,7 +48,7 @@ async def auth_client(
     app.dependency_overrides[get_email_transport] = lambda: capture
     app.dependency_overrides[magic_link_ip_limit] = _noop
     # Null the Turnstile secret so the challenge is bypassed regardless of what
-    # the developer's local .env carries — these tests exercise the magic-link
+    # the developer's local .env carries. These tests exercise the magic-link
     # logic, not Turnstile.
     app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
         update={"turnstile_secret_key": None}
@@ -189,7 +189,7 @@ async def test_signup_with_invite_creates_account_and_consumes_invite(
 
     assert resp.status_code == 200
     assert resp.json()["email"] == "new@example.com"
-    # Sign-up does not fire a sign-in audit — only the magic-link email was sent.
+    # Sign-up does not fire a sign-in audit: only the magic-link email was sent.
     assert len(emails.sent) == 1
     # Drop the identity-map snapshot so the re-query reflects the app's commit.
     db_session.expunge_all()
@@ -535,7 +535,7 @@ async def test_change_email_requests_confirm_and_alerts_old(
     )
 
     assert resp.status_code == 200, resp.text
-    # Email is NOT changed yet — only on confirm.
+    # Email is NOT changed yet, only on confirm.
     user = await db_session.scalar(select(User).where(User.email == "alice@example.com"))
     assert user is not None
     # A confirm link to the new address + an alert to the old one.

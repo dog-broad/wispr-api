@@ -157,7 +157,7 @@ async def test_export_bundles_sync_and_unwrapped_pins(
     assert by_id["syncinline01"]["ciphertext"] == base64.b64encode(b"ct").decode()
     assert by_id["syncinline01"]["stored"] is False
     assert by_id["syncinline01"]["wrapped_dek"] == base64.b64encode(b"\xaa" * 48).decode()
-    # File-backed content ships as metadata only — its bytes aren't embedded.
+    # File-backed content ships as metadata only: its bytes aren't embedded.
     assert by_id["syncstored02"]["stored"] is True
     assert by_id["syncstored02"]["ciphertext"] is None
 

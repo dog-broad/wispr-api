@@ -67,7 +67,7 @@ async def test_rotate_rewraps_and_preserves_content_key(
     db_session.expunge_all()
     row = await db_session.scalar(select(Snippet).where(Snippet.id == sid))
     assert row is not None and row.key_version == 2
-    # The content key is unchanged — unwrapping under v2 yields the original.
+    # The content key is unchanged: unwrapping under v2 yields the original.
     assert row.encrypted_content_key is not None and row.content_key_iv is not None
     assert _V2_VAULT.unwrap(row.encrypted_content_key, row.content_key_iv, 2) == ck
 

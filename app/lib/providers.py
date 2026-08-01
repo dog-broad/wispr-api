@@ -9,7 +9,7 @@ from app.config import Settings
 from app.schemas.dashboard import MetricStatus, QuotaMetric
 
 # Quota denominators (the "/ total" side of the bar). Constants matching the
-# deployment tier — thresholds (a later item) drive warn/alert, not these caps.
+# deployment tier; thresholds (a later item) drive warn/alert, not these caps.
 _RESEND_MONTHLY = 3_000
 _R2_STORAGE_GB = 10
 _R2_OPS_MONTHLY = 1_000_000

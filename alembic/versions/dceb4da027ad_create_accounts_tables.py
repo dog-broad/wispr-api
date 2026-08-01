@@ -230,7 +230,7 @@ def downgrade() -> None:
         postgresql_where=sa.text("deleted_at IS NULL"),
     )
     op.drop_table("users")
-    # Drop the ENUM type last — dropping magic_link_tokens removes the column
+    # Drop the ENUM type last: dropping magic_link_tokens removes the column
     # reference, not the type definition, so a later re-upgrade would fail with
     # "type magic_link_purpose already exists" without this.
     sa.Enum(name="magic_link_purpose").drop(op.get_bind(), checkfirst=False)

@@ -44,7 +44,7 @@ def upgrade() -> None:
         sa.Column("storage_object_key", sa.Text(), nullable=True),
         sa.Column("chunk_count", sa.Integer(), nullable=True),
         sa.Column("size_bytes", sa.BigInteger(), nullable=False),
-        # PIN-share (Mode 2) — nullable, gated by ck_snippets_pin_columns
+        # PIN-share (Mode 2): nullable, gated by ck_snippets_pin_columns
         sa.Column("pin", sa.String(length=4), nullable=True),
         sa.Column("encrypted_content_key", sa.LargeBinary(), nullable=True),
         sa.Column("content_key_iv", sa.LargeBinary(), nullable=True),
@@ -55,7 +55,7 @@ def upgrade() -> None:
             server_default=sa.text("0"),
             nullable=False,
         ),
-        # Sync (Mode 4) — nullable, gated by ck_snippets_sync_columns
+        # Sync (Mode 4): nullable, gated by ck_snippets_sync_columns
         sa.Column("wrapped_dek", sa.LargeBinary(), nullable=True),
         sa.Column("wrapped_dek_iv", sa.LargeBinary(), nullable=True),
         # Lifecycle

@@ -49,8 +49,8 @@ class Report(Base):
 
     Only PIN shares (server-key mode) can be reviewed and taken down, so a
     report always references one at submit time. The snippet it points at is
-    ephemeral — it can expire and be purged, or vanish when its owner deletes
-    their account — but the report itself is kept as an audit record, with the
+    ephemeral (it can expire and be purged, or vanish when its owner deletes
+    their account), but the report itself is kept as an audit record, with the
     pointer nulled once the snippet is gone. The remaining fields (reason,
     reporter, timestamps, resolution) stay intact regardless.
     """

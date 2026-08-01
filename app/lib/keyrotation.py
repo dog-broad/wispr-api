@@ -25,7 +25,7 @@ async def rotate_master_key(
     batch_size: int = _BATCH,
 ) -> RotationOutcome:
     """Re-wrap every Mode 2 content key that isn't already at the vault's current
-    version — unwrap with the row's recorded ``key_version``, re-wrap under the
+    version: unwrap with the row's recorded ``key_version``, re-wrap under the
     current key, write both columns back.
 
     Resumable: a keyset cursor (``id > last_id``) plus the ``key_version !=

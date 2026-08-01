@@ -14,5 +14,5 @@ def test_code_is_eight_unambiguous_chars() -> None:
 
 def test_codes_are_distinct() -> None:
     codes = {generate_invite_code() for _ in range(200)}
-    # 31^8 space — 200 draws should never collide in practice.
+    # 31^8 space: 200 draws should never collide in practice.
     assert len(codes) == 200

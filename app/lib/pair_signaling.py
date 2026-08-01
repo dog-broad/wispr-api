@@ -64,7 +64,7 @@ class ActivePair:
 class PairSignalingRegistry:
     """Lifetime registry of live signaling pairs, keyed by PIN.
 
-    The registry is process-local — Redis owns the durable issue-time
+    The registry is process-local: Redis owns the durable issue-time
     state ([D-260525-02]), this owns the live-socket state. Single-VM
     deployment makes a process-local dict sufficient; cross-host
     signaling is out of scope for v1 and would require a pub/sub bus.
